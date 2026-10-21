@@ -1,0 +1,15 @@
+{
+  "lanes": 20,
+  "success": 20,
+  "start_spread_s": 1.0,
+  "dur_min": 12.0,
+  "dur_max": 16.0,
+  "job_seconds_sum": 264.0,
+  "wall_s": 34.0,
+  "cores": 80,
+  "ram_gb": 320,
+  "runners_unique": 20,
+  "run_id": 39632491251,
+  "verified_at": "2026-10-21T16:12:10Z",
+  "note": "20 полос = 20 отдельных виртуальных машин (runners_unique=20), по 2 на каждого из 10 руководителей"
+}
