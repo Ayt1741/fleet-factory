@@ -1,0 +1,20 @@
+{
+  "leader": "L8",
+  "role": "КУРАТОР БАТЛОВ",
+  "tasks": [
+    {
+      "id": "L8-T1",
+      "title": "Собрать пакет №4 в Батл: шина на Actions + 3 дефекта кода",
+      "type": "compute",
+      "hours": 0.5,
+      "priority": "high"
+    },
+    {
+      "id": "L8-T2",
+      "title": "Проверить, что ответ Батла ложится в файлы без потерь",
+      "type": "compute",
+      "hours": 0.5,
+      "priority": "normal"
+    }
+  ]
+}

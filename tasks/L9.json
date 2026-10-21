@@ -1,0 +1,20 @@
+{
+  "leader": "L9",
+  "role": "РЕСУРСНЫЙ",
+  "tasks": [
+    {
+      "id": "L9-T1",
+      "title": "Заполнить state/fleet.json по факту замера",
+      "type": "compute",
+      "hours": 0.5,
+      "priority": "high"
+    },
+    {
+      "id": "L9-T2",
+      "title": "Проверить квоты: не превышены ли лимиты бесплатного плана",
+      "type": "compute",
+      "hours": 0.5,
+      "priority": "normal"
+    }
+  ]
+}

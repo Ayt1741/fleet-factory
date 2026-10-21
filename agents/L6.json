@@ -1,0 +1,16 @@
+{
+  "leader": "L6",
+  "role": "ОПЕРАЦИОННЫЙ",
+  "lanes": [
+    "L6-a",
+    "L6-b"
+  ],
+  "memory": [
+    "MEMORY-FULL.md",
+    "CONSTITUTION.md",
+    "ARENA-PLAYBOOK.md",
+    "RESEARCH-ADOPTED.md"
+  ],
+  "rule": "сначала интернет, потом совет, потом решение; код пишет Батл",
+  "queue": "tasks/L6.json"
+}

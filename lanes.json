@@ -1,0 +1,165 @@
+{
+  "note": "20 машин = предел бесплатного плана; по 2 машины каждому из 10 руководителей",
+  "lanes": [
+    {
+      "lane": "L1-a",
+      "leader": "L1",
+      "role": "СТРАТЕГ",
+      "slot": 0,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L1-b",
+      "leader": "L1",
+      "role": "СТРАТЕГ",
+      "slot": 1,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L2-a",
+      "leader": "L2",
+      "role": "АНАЛИТИК",
+      "slot": 0,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L2-b",
+      "leader": "L2",
+      "role": "АНАЛИТИК",
+      "slot": 1,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L3-a",
+      "leader": "L3",
+      "role": "ДИСПЕТЧЕР",
+      "slot": 0,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L3-b",
+      "leader": "L3",
+      "role": "ДИСПЕТЧЕР",
+      "slot": 1,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L4-a",
+      "leader": "L4",
+      "role": "РАЗВЕДЧИК",
+      "slot": 0,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L4-b",
+      "leader": "L4",
+      "role": "РАЗВЕДЧИК",
+      "slot": 1,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L5-a",
+      "leader": "L5",
+      "role": "ИНЖЕНЕР",
+      "slot": 0,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L5-b",
+      "leader": "L5",
+      "role": "ИНЖЕНЕР",
+      "slot": 1,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L6-a",
+      "leader": "L6",
+      "role": "ОПЕРАЦИОННЫЙ",
+      "slot": 0,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L6-b",
+      "leader": "L6",
+      "role": "ОПЕРАЦИОННЫЙ",
+      "slot": 1,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L7-a",
+      "leader": "L7",
+      "role": "КОНТРОЛЁР КАЧЕСТВА",
+      "slot": 0,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L7-b",
+      "leader": "L7",
+      "role": "КОНТРОЛЁР КАЧЕСТВА",
+      "slot": 1,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L8-a",
+      "leader": "L8",
+      "role": "КУРАТОР БАТЛОВ",
+      "slot": 0,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L8-b",
+      "leader": "L8",
+      "role": "КУРАТОР БАТЛОВ",
+      "slot": 1,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L9-a",
+      "leader": "L9",
+      "role": "РЕСУРСНЫЙ",
+      "slot": 0,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L9-b",
+      "leader": "L9",
+      "role": "РЕСУРСНЫЙ",
+      "slot": 1,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L10-a",
+      "leader": "L10",
+      "role": "ЛЕТОПИСЕЦ",
+      "slot": 0,
+      "cores": 4,
+      "ram_gb": 16
+    },
+    {
+      "lane": "L10-b",
+      "leader": "L10",
+      "role": "ЛЕТОПИСЕЦ",
+      "slot": 1,
+      "cores": 4,
+      "ram_gb": 16
+    }
+  ]
+}

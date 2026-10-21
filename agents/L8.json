@@ -1,0 +1,16 @@
+{
+  "leader": "L8",
+  "role": "КУРАТОР БАТЛОВ",
+  "lanes": [
+    "L8-a",
+    "L8-b"
+  ],
+  "memory": [
+    "MEMORY-FULL.md",
+    "CONSTITUTION.md",
+    "ARENA-PLAYBOOK.md",
+    "RESEARCH-ADOPTED.md"
+  ],
+  "rule": "сначала интернет, потом совет, потом решение; код пишет Батл",
+  "queue": "tasks/L8.json"
+}

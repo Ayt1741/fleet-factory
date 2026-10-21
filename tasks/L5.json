@@ -1,0 +1,20 @@
+{
+  "leader": "L5",
+  "role": "ИНЖЕНЕР",
+  "tasks": [
+    {
+      "id": "L5-T1",
+      "title": "Довести рабочее место до полного: Chrome, playwright, tmux, state-load",
+      "type": "compute",
+      "hours": 0.5,
+      "priority": "high"
+    },
+    {
+      "id": "L5-T2",
+      "title": "Проверить восстановление сессии после выключения ПК",
+      "type": "compute",
+      "hours": 0.5,
+      "priority": "normal"
+    }
+  ]
+}

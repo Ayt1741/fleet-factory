@@ -1,0 +1,20 @@
+{
+  "leader": "L6",
+  "role": "ОПЕРАЦИОННЫЙ",
+  "tasks": [
+    {
+      "id": "L6-T1",
+      "title": "График 120 ядер-часов Codespaces на месяц",
+      "type": "compute",
+      "hours": 0.5,
+      "priority": "high"
+    },
+    {
+      "id": "L6-T2",
+      "title": "Правило остановки по 5 минутам простоя — проверить на практике",
+      "type": "compute",
+      "hours": 0.5,
+      "priority": "normal"
+    }
+  ]
+}

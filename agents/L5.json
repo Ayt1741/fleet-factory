@@ -1,0 +1,16 @@
+{
+  "leader": "L5",
+  "role": "ИНЖЕНЕР",
+  "lanes": [
+    "L5-a",
+    "L5-b"
+  ],
+  "memory": [
+    "MEMORY-FULL.md",
+    "CONSTITUTION.md",
+    "ARENA-PLAYBOOK.md",
+    "RESEARCH-ADOPTED.md"
+  ],
+  "rule": "сначала интернет, потом совет, потом решение; код пишет Батл",
+  "queue": "tasks/L5.json"
+}

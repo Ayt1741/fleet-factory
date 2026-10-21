@@ -1,0 +1,69 @@
+name: lanes-20
+# 20 машин за один прогон: по 2 на каждого из 10 руководителей.
+# Предел бесплатного плана GitHub — 20 одновременных заданий на аккаунт.
+on:
+  push:
+    paths: ["lanes.json", "lane_runner.py", "tasks/**", "agents/**", ".github/workflows/lanes.yml"]
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Сколько секунд работает каждая машина"
+        default: "8"
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      lanes: ${{ steps.read.outputs.lanes }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: echo "lanes=$(python3 -c 'import json;print(json.dumps([l["lane"] for l in json.load(open("lanes.json"))["lanes"]]))')" >> $GITHUB_OUTPUT
+  lane:
+    needs: resolve
+    strategy:
+      max-parallel: 20
+      fail-fast: false
+      matrix:
+        lane: ${{ fromJSON(needs.resolve.outputs.lanes) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: своя машина и своя задача
+        env:
+          LANE: ${{ matrix.lane }}
+          SECONDS_TO_WORK: ${{ github.event.inputs.seconds || '8' }}
+        run: |
+          echo "полоса=$LANE машина=$(hostname) ядер=$(nproc) памяти=$(free -g | awk '/Mem:/{print $2}')ГБ"
+          python3 lane_runner.py "$LANE" "$SECONDS_TO_WORK"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lane-${{ matrix.lane }}
+          path: results/${{ matrix.lane }}.json
+          retention-days: 1
+  summary:
+    needs: lane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lane-*
+          path: all
+      - name: сводка
+        run: |
+          python3 - <<'PY'
+          import json, glob, collections
+          rows = [json.load(open(p, encoding="utf-8")) for p in glob.glob("all/*/*.json")]
+          rows.sort(key=lambda r: r["lane"])
+          per = collections.Counter(r["leader"] for r in rows)
+          print(f"отработало машин: {len(rows)}; руководителей: {len(per)}; задач выполнено: {len({r['task']['id'] for r in rows})}")
+          for r in rows:
+              print(f"{r['lane']:6s} {r['leader']:4s} {r['task']['id']:8s} {r['machine']['cores']}я {r['seconds']:5.2f}с хешей={r['result']['hash_updates']:>8d} простых={r['result']['primes_found']}")
+          json.dump({"lanes": len(rows), "leaders": len(per),
+                     "tasks_done": len({r["task"]["id"] for r in rows}),
+                     "total_seconds": round(sum(r["seconds"] for r in rows), 2),
+                     "per_leader": dict(per)}, open("lanes_summary.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lanes-summary
+          path: lanes_summary.json

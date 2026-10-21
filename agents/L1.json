@@ -1,0 +1,16 @@
+{
+  "leader": "L1",
+  "role": "СТРАТЕГ",
+  "lanes": [
+    "L1-a",
+    "L1-b"
+  ],
+  "memory": [
+    "MEMORY-FULL.md",
+    "CONSTITUTION.md",
+    "ARENA-PLAYBOOK.md",
+    "RESEARCH-ADOPTED.md"
+  ],
+  "rule": "сначала интернет, потом совет, потом решение; код пишет Батл",
+  "queue": "tasks/L1.json"
+}

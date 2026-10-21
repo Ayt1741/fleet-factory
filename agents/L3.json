@@ -1,0 +1,16 @@
+{
+  "leader": "L3",
+  "role": "ДИСПЕТЧЕР",
+  "lanes": [
+    "L3-a",
+    "L3-b"
+  ],
+  "memory": [
+    "MEMORY-FULL.md",
+    "CONSTITUTION.md",
+    "ARENA-PLAYBOOK.md",
+    "RESEARCH-ADOPTED.md"
+  ],
+  "rule": "сначала интернет, потом совет, потом решение; код пишет Батл",
+  "queue": "tasks/L3.json"
+}
