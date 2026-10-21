@@ -1,6 +1,9 @@
 name: council-20
 # Живое совещание 20 машин: каждая выходит на связь, читает чужие мнения (слепо) и говорит своё.
 # Канал ntfy.sh — готовая программа связи, без аккаунта и ключей.
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
     inputs:
@@ -88,6 +91,6 @@ jobs:
         run: |
           git config user.email "fleet@local"; git config user.name "fleet"
           git add council/ && git commit -m "protocol: живое совещание 20 машин $(date -u +%FT%TZ)" || echo "нечего коммитить"
-          git push || echo "push отклонён (нет прав) — протокол в артефакте"
+          git push || echo "push отклонён — протокол остался в артефакте"
       - uses: actions/upload-artifact@v4
         with: {name: council-protocol, path: council/}
