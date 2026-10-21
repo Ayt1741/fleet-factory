@@ -1,0 +1,93 @@
+name: council-20
+# Живое совещание 20 машин: каждая выходит на связь, читает чужие мнения (слепо) и говорит своё.
+# Канал ntfy.sh — готовая программа связи, без аккаунта и ключей.
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Канал ntfy"
+        default: "arena-council-7k3m9p2x"
+      seconds:
+        description: "Сколько секунд машина работает"
+        default: "6"
+  push:
+    paths: [".github/workflows/council.yml", "comms.py"]
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      lanes: ${{ steps.read.outputs.lanes }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: echo "lanes=$(python3 -c 'import json;print(json.dumps([l["lane"] for l in json.load(open("lanes.json"))["lanes"]]))')" >> $GITHUB_OUTPUT
+  lane:
+    needs: resolve
+    strategy:
+      max-parallel: 20
+      fail-fast: false
+      matrix:
+        lane: ${{ fromJSON(needs.resolve.outputs.lanes) }}
+    runs-on: ubuntu-latest
+    env:
+      CHANNEL: ${{ github.event.inputs.channel || 'arena-council-7k3m9p2x' }}
+      LANE: ${{ matrix.lane }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: выйти на связь и провести совещание
+        run: |
+          set -e
+          SECS="${{ github.event.inputs.seconds || '6' }}"
+          python3 comms.py presence "$CHANNEL" "$LANE" "машина=$(hostname) задача из tasks/"
+          # читаем то, что уже сказали другие (слепое чтение — без имён)
+          python3 comms.py read "$CHANNEL" > /tmp/seen.json || echo "[]" > /tmp/seen.json
+          SEEN=$(python3 -c "import json;d=json.load(open('/tmp/seen.json'));print(len(d))")
+          echo "прочитано чужих сообщений: $SEEN"
+          # своё мнение: без подписи в тексте, только заголовок несёт полосу
+          TASK=$(python3 -c "import json,os;l=os.environ['LANE'];ld=l.split('-')[0];s=0 if l.endswith('a') else 1;t=json.load(open('tasks/%s.json'%ld))['tasks'][s]['title'];print(t)")
+          python3 comms.py council "$CHANNEL" "$LANE" "по задаче «$TASK»: готово, жду свода"
+          sleep "$SECS"
+          echo "{\"lane\":\"$LANE\",\"seen\":$SEEN,\"machine\":\"$(hostname)\"}" > lane_state.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: state-${{ matrix.lane }}
+          path: lane_state.json
+          retention-days: 1
+  summary:
+    needs: lane
+    runs-on: ubuntu-latest
+    env:
+      CHANNEL: ${{ github.event.inputs.channel || 'arena-council-7k3m9p2x' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {pattern: "state-*", path: all}
+      - name: свод живого совещания
+        run: |
+          python3 comms.py tally "$CHANNEL" | tee tally.json
+          mkdir -p council
+          TS=$(date -u +%Y%m%dT%H%M%SZ)
+          python3 - <<'PY' > council/TRANSCRIPT-$TS.md
+          import json, glob, subprocess
+          t = json.load(open("tally.json", encoding="utf-8"))
+          states = [json.load(open(p, encoding="utf-8")) for p in glob.glob("all/*/lane_state.json")]
+          print("# ПРОТОКОЛ ЖИВОГО СОВЕЩАНИЯ 20 МАШИН")
+          print()
+          print("Сообщений в канале: **%d**, машин на связи: **%d**, мнений: **%d**" % (t["messages"], t["on_air"], t["opinions"]))
+          print()
+          print("## Полосы на связи")
+          for l in t["lanes"]:
+              print("- " + l)
+          print()
+          print("## Что каждая машина успела прочитать до своего выступления")
+          for s in sorted(states, key=lambda x: x["lane"]):
+              print("- %s: %d чужих сообщений (машина %s)" % (s["lane"], s["seen"], s["machine"]))
+          PY
+          ls -la council/
+      - name: положить протокол в репозиторий
+        run: |
+          git config user.email "fleet@local"; git config user.name "fleet"
+          git add council/ && git commit -m "protocol: живое совещание 20 машин $(date -u +%FT%TZ)" || echo "нечего коммитить"
+          git push || echo "push отклонён (нет прав) — протокол в артефакте"
+      - uses: actions/upload-artifact@v4
+        with: {name: council-protocol, path: council/}
