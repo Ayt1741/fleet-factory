@@ -1,0 +1,28 @@
+name: heartbeat
+# «Штаб без виртуалки»: расписание каждые 15 минут вместо круглосуточного сервера.
+# Ни карты, ни телефона, ни Oracle — только публичный репозиторий и Actions.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+jobs:
+  beat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: пульс
+        run: |
+          echo "пульс $(date -u +%FT%TZ)"
+          echo "cores=$(nproc) mem=$(free -g | awk '/Mem:/{print $2}')GB"
+          python3 - <<'PY'
+          import json, platform, datetime, os
+          d = {"ts": datetime.datetime.utcnow().isoformat()+"Z", "host": platform.node(),
+               "cores": os.cpu_count(), "runner": "github-hosted-ubuntu-latest"}
+          open("state_heartbeat.json","w").write(json.dumps(d))
+          print(json.dumps(d))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: heartbeat
+          path: state_heartbeat.json
+          retention-days: 1
