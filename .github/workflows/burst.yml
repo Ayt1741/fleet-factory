@@ -1,0 +1,33 @@
+name: burst-20x4
+# Замер завода: 20 одновременных job по 4 ядра / 16 ГБ (бесплатно на публичном репозитории).
+on:
+  push:
+    paths:
+      - "bench.py"
+      - ".github/workflows/burst.yml"
+  workflow_dispatch:
+jobs:
+  probe:
+    strategy:
+      max-parallel: 20
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: паспорт машины
+        run: |
+          echo "shard=${{ matrix.shard }}"
+          echo "host=$(hostname) cores=$(nproc) mem_gb=$(free -g | awk '/Mem:/{print $2}') disk=$(df -h / | awk 'NR==2{print $4}')"
+          lscpu | grep -E "Model name|^CPU\(s\)" | head -2
+      - name: бенчмарк 20 секунд
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: python3 bench.py 20
+      - name: след в артефакт
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.shard }}
+          path: bench_result_${{ matrix.shard }}.json
+          retention-days: 1
