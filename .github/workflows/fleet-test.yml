@@ -1,0 +1,19 @@
+name: fleet-test
+on:
+  workflow_dispatch:
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        node: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
+    steps:
+      - name: Ресурсы машины
+        run: |
+          echo "узел ${{ matrix.node }}"
+          nproc
+          free -m | head -2
+          df -h / | tail -1
+          echo "начало $(date -u +%H:%M:%S) конец $(date -u +%H:%M:%S)"
