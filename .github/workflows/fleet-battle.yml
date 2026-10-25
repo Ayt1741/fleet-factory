@@ -30,18 +30,23 @@ jobs:
         run: |
           printf '%s' "$ARENA_STATE_JSON" > state_arena.json
           python -c "import json;d=json.load(open('state_arena.json'));print('cookies:',len(d.get('cookies',[])))"
-      - name: Отправка без ожидания
+      - name: Отправка боёв (без ожидания ответа)
         run: |
           TOTAL=${{ github.event.inputs.count }}; SHARDS=200
-          PER=$(( (TOTAL + SHARDS - 1) / SHARDS ))
-          python battle_engine.py submit --pdf "${{ github.event.inputs.pdf }}" \
+          PER=$(( (TOTAL + SHARDS - 1) / SHARDS )); if [ "$PER" -lt 1 ]; then PER=1; fi
+          ACTIVE=$(( (TOTAL + PER - 1) / PER ))
+          echo "всего=$TOTAL шардов_в_работе=$ACTIVE по=$PER"
+          if [ ${{ matrix.shard }} -gt $ACTIVE ]; then echo "шард ${{ matrix.shard }} не нужен"; exit 0; fi
+          xvfb-run -a python battle_engine.py submit --pdf "${{ github.event.inputs.pdf }}" \
             --prompt "${{ github.event.inputs.prompt }}" --count $PER --workers 4 \
-            --tag "S${{ matrix.shard }}" --out "sessions-${{ matrix.shard }}.jsonl"
+            --tag "S${{ matrix.shard }}" --out "sessions-${{ matrix.shard }}.jsonl" --headed
           sleep ${{ github.event.inputs.pause }}
       - name: Сбор ответов
         run: |
-          python battle_engine.py harvest --in "sessions-${{ matrix.shard }}.jsonl" \
-            --out "answers-${{ matrix.shard }}.jsonl" --wait 240 --workers 4
+          if [ -f "sessions-${{ matrix.shard }}.jsonl" ]; then
+            xvfb-run -a python battle_engine.py harvest --in "sessions-${{ matrix.shard }}.jsonl" \
+              --out "answers-${{ matrix.shard }}.jsonl" --wait 240 --workers 4 --headed
+          else echo "нет сессии — сбор пропущен"; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
