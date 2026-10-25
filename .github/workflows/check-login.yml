@@ -1,0 +1,35 @@
+name: check-login
+on:
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: |
+          pip install playwright==1.47.0
+          python -m playwright install --with-deps chromium
+      - name: Проверка входа по присланным cookies
+        env:
+          ARENA_STATE_JSON: ${{ secrets.ARENA_STATE }}
+        run: |
+          printf '%s' "$ARENA_STATE_JSON" > state_arena.json
+          python - <<'PY'
+          import json, os
+          from playwright.sync_api import sync_playwright
+          st = json.load(open('state_arena.json'))
+          print('cookies:', len(st.get('cookies', [])), [c['name'] for c in st.get('cookies', [])])
+          UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+          with sync_playwright() as p:
+              b=p.chromium.launch(headless=True,args=['--no-sandbox'])
+              c=b.new_context(storage_state='state_arena.json', locale='ru-RU', user_agent=UA, viewport={'width':1400,'height':950})
+              pg=c.new_page(); pg.goto('https://arena.ai/text', timeout=60000); pg.wait_for_timeout(8000)
+              t=pg.inner_text('body')
+              print('ВОШЁЛ:', 'Get started' not in t and 'Log In' not in t)
+              print('есть Get started:', 'Get started' in t, '| есть Ask anything:', 'Ask anything' in t)
+              print('фрагмент:', t[:160].replace('\n',' | '))
+              b.close()
+          PY
