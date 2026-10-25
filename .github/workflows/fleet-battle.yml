@@ -1,0 +1,51 @@
+name: fleet-battle
+# Флот боёв: 20 машин параллельно, каждая отправляет свои бои БЕЗ ОЖИДАНИЯ,
+# затем собирает ответы. Состояние входа — секрет ARENA_STATE (JSON из storage_state).
+on:
+  workflow_dispatch:
+    inputs:
+      count: {description: 'боёв на всю сеть', default: '100'}
+      jobs:  {description: 'машин (до 20)', default: '20'}
+      pdf:   {description: 'имя PDF в репозитории', default: 'ЗАДАНИЕ.pdf'}
+jobs:
+  battle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Окружение
+        run: |
+          pip install playwright==1.47.0
+          python -m playwright install --with-deps chromium
+      - name: Состояние входа
+        env:
+          ARENA_STATE_JSON: ${{ secrets.ARENA_STATE }}
+        run: |
+          printf '%s' "$ARENA_STATE_JSON" > state_arena.json
+          python -c "import json,os;d=json.load(open('state_arena.json'));print('куки:',len(d.get('cookies',[])))"
+      - name: Отправка (без ожидания)
+        run: |
+          TOTAL=${{ github.event.inputs.count }}
+          SHARDS=${{ github.event.inputs.jobs }}
+          PER=$(( (TOTAL + SHARDS - 1) / SHARDS ))
+          python battle_engine.py submit --pdf "${{ github.event.inputs.pdf }}" --prompt prompt.txt \
+            --count $PER --workers 4 --tag "S${{ matrix.shard }}" --out "sessions-${{ matrix.shard }}.jsonl"
+      - name: Сбор ответов
+        run: |
+          python battle_engine.py harvest --in "sessions-${{ matrix.shard }}.jsonl" \
+            --out "answers-${{ matrix.shard }}.jsonl" --wait 300 --workers 4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shard-${{ matrix.shard }}
+          path: |
+            sessions-${{ matrix.shard }}.jsonl
+            answers-${{ matrix.shard }}.jsonl
+          if-no-files-found: ignore
