@@ -1,0 +1,102 @@
+name: probe-login
+on:
+  workflow_dispatch:
+jobs:
+  login:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          pip install playwright==1.47.0
+          python -m playwright install --with-deps chromium
+      - name: Попытка входа в Arena через Google
+        env:
+          GOOGLE_EMAIL: ${{ secrets.GOOGLE_EMAIL }}
+          GOOGLE_PASS: ${{ secrets.GOOGLE_PASS }}
+          TOTP_SECRET: ${{ secrets.TOTP_SECRET }}
+        run: |
+          python - <<'PY'
+          import base64, hashlib, hmac, os, re, struct, time
+          from playwright.sync_api import sync_playwright
+
+          def totp(secret):
+              s = re.sub(r'\s+', '', secret).upper().rstrip('=')
+              key = base64.b32decode(s + '=' * ((8 - len(s) % 8) % 8))
+              h = hmac.new(key, struct.pack('>Q', int(time.time() // 30)), hashlib.sha1).digest()
+              o = h[-1] & 0x0F
+              return str((struct.unpack('>I', h[o:o+4])[0] & 0x7FFFFFFF) % 1000000).zfill(6)
+
+          UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+          with sync_playwright() as p:
+              b = p.chromium.launch(headless=True, args=['--no-sandbox'])
+              ctx = b.new_context(locale='ru-RU', user_agent=UA, viewport={'width':1400,'height':950})
+              pg = ctx.new_page()
+              pg.goto('https://arena.ai/text', timeout=60000)
+              pg.wait_for_timeout(5000)
+              t = pg.inner_text('body')
+              print('до входа: Get started =', 'Get started' in t)
+              # ищем кнопку входа
+              cands = pg.eval_on_selector_all('button, a, [role=button]',
+                  "els => els.map((e,i) => ({i, t:(e.innerText||'').trim().slice(0,30), a:(e.getAttribute('aria-label')||''), h:e.getAttribute('href')||''}))")
+              print('кандидаты:', [c for c in cands if any(k in (c['t']+c['a']+c['h']).lower() for k in ('log','sign','start','account'))][:8])
+              clicked = False
+              for txt in ['Get started', 'Log in', 'Log In', 'Sign in', 'Sign up']:
+                  try:
+                      loc = pg.get_by_text(txt, exact=False).first
+                      if loc.count():
+                          loc.click(timeout=6000); clicked = True
+                          print('клик по:', txt); pg.wait_for_timeout(5000); break
+                  except Exception as e:
+                      print('клик не удался', txt, str(e)[:80])
+              print('после клика url:', pg.url)
+              body = pg.inner_text('body')
+              print('признаки окна входа:', [w for w in ('Google','Continue with','войти','Email','email') if w in body])
+              # Google
+              page = pg
+              try:
+                  with ctx.expect_page(timeout=8000) as info:
+                      pg.get_by_text(re.compile('google', re.I)).first.click(timeout=8000)
+                  page = info.value
+                  print('открылось окно Google')
+              except Exception as e:
+                  print('окно Google не открылось:', str(e)[:100])
+              page.wait_for_timeout(5000)
+              print('url входа:', page.url)
+              print('заголовок:', page.title())
+              try:
+                  page.fill('input[type=email]', os.environ['GOOGLE_EMAIL'], timeout=15000)
+                  page.keyboard.press('Enter'); page.wait_for_timeout(6000)
+                  print('email введён, url:', page.url)
+                  page.fill('input[type=password]', os.environ['GOOGLE_PASS'], timeout=15000)
+                  page.keyboard.press('Enter'); page.wait_for_timeout(8000)
+                  print('пароль введён, url:', page.url)
+                  code = totp(os.environ['TOTP_SECRET'])
+                  for sel in ['input[type=tel]', 'input[autocomplete="one-time-code"]', 'input[name*=otp]']:
+                      loc = page.locator(sel).first
+                      if loc.count():
+                          loc.fill(code); page.keyboard.press('Enter'); print('TOTP введён'); break
+                  page.wait_for_timeout(9000)
+                  print('после TOTP url:', page.url)
+              except Exception as e:
+                  print('шаг Google прервался:', str(e)[:200])
+              try:
+                  if page is not pg: page.close()
+              except Exception: pass
+              pg.goto('https://arena.ai/text', timeout=60000); pg.wait_for_timeout(6000)
+              t2 = pg.inner_text('body')
+              print('ИТОГ: вход выполнен =', 'Get started' not in t2)
+              print('есть поле ввода =', 'Ask anything' in t2)
+              ctx.storage_state(path='state.json')
+              print('размер состояния:', os.path.getsize('state.json'))
+              b.close()
+          PY
+      - name: Сохранить состояние входа
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arena-state
+          path: state.json
+          if-no-files-found: ignore
