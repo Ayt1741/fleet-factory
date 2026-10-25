@@ -46,24 +46,29 @@ def submit_one(ctx, pdf, prompt, idx, tag):
     t0 = time.time()
     pg = ctx.new_page()
     try:
-        pg.goto('https://arena.ai/text', timeout=60000)
-        pg.wait_for_timeout(3500)
+        pg.goto('https://arena.ai/text', timeout=90000)
+        # ждём, пока интерфейс действительно отрисуется (Cloudflare + гидрация Next.js)
+        pg.wait_for_selector('textarea', state='visible', timeout=60000)
+        pg.wait_for_timeout(1500)
         if pdf:
-            inputs = pg.locator('input[type=file]')
-            if inputs.count():
-                inputs.first.set_input_files(pdf)
-                rec['attach'] = 'sent'
-                pg.wait_for_timeout(4000)
-            else:
-                rec['attach'] = 'no_input'
+            pg.wait_for_selector('input[type=file]', state='attached', timeout=60000)
+            pg.set_input_files('input[type=file]', pdf, timeout=60000)
+            rec['attach'] = 'sent'
+            pg.wait_for_timeout(5000)          # дать загрузиться и показаться имени файла
         box = pg.locator('textarea').first
-        box.click(timeout=15000)
+        box.click(timeout=20000)
         box.fill(prompt)
         pg.wait_for_timeout(900)
-        pg.locator('button[aria-label*="Send"]').first.click(timeout=10000)
+        pg.locator('button[aria-label*="Send"]').first.click(timeout=20000)
         rec['sent'] = True
-        pg.wait_for_timeout(2500)
+        # адрес боя появляется только после того, как обе модели догенерируют ответ
+        try:
+            pg.wait_for_url(re.compile(r'/c/[0-9a-f-]{8,}'), timeout=120000)
+        except Exception:
+            pass
+        pg.wait_for_timeout(1500)
         rec['url'] = pg.url
+        rec['url_ok'] = bool(re.search(r'/c/[0-9a-f-]{8,}', pg.url))
     except Exception as e:
         rec['sent'] = False
         rec['error'] = str(e)[:180]
@@ -105,30 +110,35 @@ def harvest_one(ctx, rec, wait_s):
 def cmd_submit(a):
     prompt = open(a.prompt, encoding='utf-8').read().strip()
     results = []
-    with sync_playwright() as p:
-        b = p.chromium.launch(headless=not a.headed, args=['--no-sandbox', '--disable-dev-shm-usage'])
 
-        def worker(k):
+    def worker(k):
+        # свой браузер на поток: sync_playwright нельзя переиспользовать между потоками
+        with sync_playwright() as p:
+            b = p.chromium.launch(headless=not a.headed, args=['--no-sandbox', '--disable-dev-shm-usage',
+                                                               '--disable-blink-features=AutomationControlled'])
             ctx = new_ctx(b)
             local = []
             for i in range(k, a.count, a.workers):
                 r = submit_one(ctx, a.pdf, prompt, i + 1, a.tag)
                 local.append(r)
                 with lock:
-                    print(json.dumps({'idx': r['idx'], 'sent': r['sent'], 'sec': r['sec']}), flush=True)
+                    print(json.dumps({'idx': r['idx'], 'sent': r['sent'], 'sec': r['sec'],
+                                      'err': r.get('error', '')[:60]}, ensure_ascii=False), flush=True)
             ctx.close()
+            b.close()
             return local
 
-        with ThreadPoolExecutor(max_workers=a.workers) as ex:
-            for part in ex.map(worker, range(a.workers)):
-                results.extend(part)
-        b.close()
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=a.workers) as ex:
+        for part in ex.map(worker, range(a.workers)):
+            results.extend(part)
+    wall = time.time() - t0
     results.sort(key=lambda r: r['idx'])
     with open(a.out, 'w', encoding='utf-8') as fh:
         for r in results:
             fh.write(json.dumps(r, ensure_ascii=False) + '\n')
     sent = sum(1 for r in results if r.get('sent'))
-    print(f'отправлено {sent} из {a.count} за {sum(r["sec"] for r in results):.0f} с работы', flush=True)
+    print(f'отправлено {sent} из {a.count} за {wall:.0f} с (стенное время, {a.workers} браузера)', flush=True)
     return 0 if sent else 3
 
 
@@ -136,31 +146,33 @@ def cmd_harvest(a):
     recs = [json.loads(l) for l in open(a.inp, encoding='utf-8') if l.strip().startswith('{')]
     recs = [r for r in recs if r.get('url')]
     out = []
-    with sync_playwright() as p:
-        b = p.chromium.launch(headless=not a.headed, args=['--no-sandbox', '--disable-dev-shm-usage'])
 
-        def worker(k):
+    def worker(k):
+        with sync_playwright() as p:
+            b = p.chromium.launch(headless=not a.headed, args=['--no-sandbox', '--disable-dev-shm-usage',
+                                                               '--disable-blink-features=AutomationControlled'])
             ctx = new_ctx(b)
             local = []
             for i in range(k, len(recs), a.workers):
                 r = harvest_one(ctx, recs[i], a.wait)
                 local.append(r)
                 with lock:
-                    print(json.dumps({'idx': r['idx'], 'status': r['status'], 'sec': r['sec']}), flush=True)
+                    print(json.dumps({'idx': r['idx'], 'status': r.get('status'), 'sec': r['sec']}), flush=True)
             ctx.close()
+            b.close()
             return local
 
-        with ThreadPoolExecutor(max_workers=a.workers) as ex:
-            for part in ex.map(worker, range(a.workers)):
-                out.extend(part)
-        b.close()
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=a.workers) as ex:
+        for part in ex.map(worker, range(a.workers)):
+            out.extend(part)
     out.sort(key=lambda r: r['idx'])
     with open(a.out, 'w', encoding='utf-8') as fh:
         for r in out:
             fh.write(json.dumps(r, ensure_ascii=False) + '\n')
-    ans = sum(1 for r in out if r['status'] == 'answer')
-    ref = sum(1 for r in out if r['status'] == 'refused')
-    print(f'собрано: ответов {ans}, отказов {ref}, прочее {len(out)-ans-ref} из {len(out)}', flush=True)
+    ans = sum(1 for r in out if r.get('status') == 'answer')
+    ref = sum(1 for r in out if r.get('status') == 'refused')
+    print(f'собрано за {time.time()-t0:.0f} с: ответов {ans}, отказов {ref}, прочее {len(out)-ans-ref} из {len(out)}', flush=True)
     return 0
 
 
