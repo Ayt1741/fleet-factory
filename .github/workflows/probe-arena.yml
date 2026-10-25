@@ -1,0 +1,47 @@
+name: probe-arena
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Проверка сети до Arena
+        run: |
+          echo "== curl без UA =="
+          curl -s -o /dev/null -w "code=%{http_code} time=%{time_total}\n" https://arena.ai/text || true
+          echo "== curl с UA Chrome =="
+          curl -s -o /tmp/a.html -w "code=%{http_code} time=%{time_total}\n" \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" \
+            https://arena.ai/text || true
+          echo "== первые строки страницы =="
+          head -c 300 /tmp/a.html || true
+          echo
+          echo "== заголовки =="
+          curl -sI https://arena.ai/text | head -8 || true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Playwright и Chromium
+        run: |
+          pip install playwright==1.47.0
+          python -m playwright install --with-deps chromium
+      - name: Открыть Arena браузером
+        run: |
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              b = p.chromium.launch(headless=True, args=['--no-sandbox'])
+              ctx = b.new_context(locale='ru-RU',
+                  user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
+              pg = ctx.new_page()
+              r = pg.goto('https://arena.ai/text', timeout=60000)
+              pg.wait_for_timeout(6000)
+              print('HTTP:', r.status if r else '?')
+              print('TITLE:', pg.title())
+              t = pg.inner_text('body')
+              print('ДЛИНА ТЕКСТА:', len(t))
+              print('ПРИЗНАКИ:', 'Get started' in t, 'Ask anything' in t, 'проверки безопасности' in t or 'security' in t.lower())
+              print('НАЧАЛО:', t[:200].replace('\n',' | '))
+              b.close()
+          PY
