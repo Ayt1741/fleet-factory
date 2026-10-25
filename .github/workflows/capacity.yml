@@ -1,0 +1,49 @@
+name: capacity
+on:
+  workflow_dispatch:
+jobs:
+  cap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: |
+          pip install playwright==1.47.0
+          python -m playwright install --with-deps chromium
+      - name: Сколько браузеров держит одна машина
+        run: |
+          python - <<'PY'
+          import os, resource, time
+          from playwright.sync_api import sync_playwright
+
+          def rss():
+              with open('/proc/self/status') as f:
+                  for l in f:
+                      if l.startswith('VmRSS'):
+                          return int(l.split()[1]) // 1024
+              return -1
+
+          UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+          with sync_playwright() as p:
+              for n in (4, 8, 12):
+                  b = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+                  pages, t0 = [], time.time()
+                  ok = 0
+                  for i in range(n):
+                      c = b.new_context(locale='ru-RU', user_agent=UA)
+                      pg = c.new_page()
+                      try:
+                          r = pg.goto('https://arena.ai/text', timeout=45000)
+                          pg.wait_for_timeout(2000)
+                          if r and r.status == 200 and 'arena' in pg.title().lower():
+                              ok += 1
+                      except Exception as e:
+                          print('  ошибка', i, str(e)[:60])
+                      pages.append((c, pg))
+                  print(f'браузеров {n}: открыли Arena успешно {ok} за {time.time()-t0:.1f} с, память процесса {rss()} МБ')
+                  for c, pg in pages:
+                      try: c.close()
+                      except Exception: pass
+                  b.close()
+          PY
