@@ -101,7 +101,53 @@ jobs:
           tail -30 /tmp/b.log 2>/dev/null || true
           free -m | head -2
 
-      - name: Отдать результат
+      - name: Опубликовать в hranilishe
+        if: always()
+        env:
+          PAT: ${{ secrets.HRANILISHE_PAT }}
+        run: |
+          cd движок
+          ls -la данные/ 2>/dev/null || exit 0
+          python - <<'PY'
+          import os, json, base64, urllib.request, urllib.parse, hashlib
+          пат = os.environ.get("PAT","")
+          if not пат:
+              print("::warning title=нет PAT::секрет HRANILISHE_PAT не задан — результат остался в артефакте")
+              raise SystemExit(0)
+          def put(путь, файл, сообщение):
+              данные = open(файл,"rb").read()
+              if len(данные) > 45*1024*1024:
+                  print("слишком большой для contents API:", файл, len(данные)//1048576, "МБ"); return
+              импорт = urllib.parse.quote(путь)
+              req = urllib.request.Request(f"https://api.github.com/repos/Ayt1741/hranilishe/contents/{импорт}",
+                  headers={"Authorization":f"Bearer {пат}","User-Agent":"arena","Accept":"application/vnd.github+json"})
+              ша = None
+              try:
+                  d = json.loads(urllib.request.urlopen(req, timeout=60).read()); ша = d.get("sha")
+              except Exception: pass
+              тело = {"message": сообщение, "content": base64.b64encode(данные).decode()}
+              if ша: тело["sha"] = ша
+              req2 = urllib.request.Request(f"https://api.github.com/repos/Ayt1741/hranilishe/contents/{импорт}",
+                  method="PUT", data=json.dumps(тело).encode(),
+                  headers={"Authorization":f"Bearer {пат}","User-Agent":"arena","Accept":"application/vnd.github+json","Content-Type":"application/json"})
+              try:
+                  r = json.loads(urllib.request.urlopen(req2, timeout=300).read())
+                  print("залито:", путь, (r.get("commit") or {}).get("sha","")[:8])
+              except Exception as e:
+                  print("::warning title=заливка::" + путь + " — " + str(e)[:120])
+          import glob
+          for ф in glob.glob("данные/*.npy") + glob.glob("данные/*.db"):
+              put("движок/результат/" + os.path.basename(ф), ф, "результат облачной сборки")
+          # отчёт о сборке
+          отчёт = {"прогон": os.environ.get("GITHUB_RUN_ID"), "файлы": []}
+          for ф in glob.glob("данные/*"):
+              отчёт["файлы"].append({"имя": os.path.basename(ф), "байт": os.path.getsize(ф)})
+          open("/tmp/отчёт.json","w").write(json.dumps(отчёт, ensure_ascii=False, indent=1))
+          put("движок/результат/отчёт.json", "/tmp/отчёт.json", "отчёт о сборке")
+          print(json.dumps(отчёт, ensure_ascii=False, indent=1))
+          PY
+
+      - name: Отдать в артефакт
         if: always()
         uses: actions/upload-artifact@v4
         with:
