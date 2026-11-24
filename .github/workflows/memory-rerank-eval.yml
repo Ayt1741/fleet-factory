@@ -32,6 +32,7 @@ jobs:
           pip install --quiet --upgrade pip
           pip install --quiet onnxruntime==1.19.2 transformers tokenizers sentencepiece pymorphy3 numpy
           pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu || pip install --quiet torch
+          pip install --quiet sentence-transformers
           free -m | head -2
 
       - name: Забрать движок, векторы, наборы
