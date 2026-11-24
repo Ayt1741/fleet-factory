@@ -1,0 +1,134 @@
+name: memory-rerank-eval
+# Замер реранкера в облаке (16 ГБ — в песочнице 1,9 ГБ две ONNX-модели не влезают: OOM).
+# Сравнивает одно и то же на одних и тех же наборах: без реранкера / с реранкером.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+  LC_ALL: C.UTF-8
+  TOKENIZERS_PARALLELISM: "false"
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Зависимости
+        run: |
+          pip install --quiet --upgrade pip
+          pip install --quiet onnxruntime==1.19.2 transformers tokenizers sentencepiece pymorphy3 numpy
+          free -m | head -2
+
+      - name: Забрать движок, векторы, наборы
+        env:
+          PAT: ${{ secrets.HRANILISHE_PAT }}
+        run: |
+          mkdir -p движок/данные
+          python - <<'PY'
+          import os, base64, urllib.request, urllib.parse, json
+          пат = os.environ["PAT"]
+          def raw(путь, куда, минимум=1):
+              url = ("https://raw.githubusercontent.com/Ayt1741/hranilishe/main/"
+                     + urllib.parse.quote(путь))
+              req = urllib.request.Request(url, headers={"User-Agent": "arena",
+                                                         "Authorization": f"Bearer {пат}"})
+              данные = urllib.request.urlopen(req, timeout=300).read()
+              if len(данные) < минимум:
+                  raise SystemExit(f"{куда}: {len(данные)} байт, ждали ≥{минимум}")
+              open(куда, "wb").write(данные)
+              print(куда, len(данные), "байт")
+          raw("движок/engine.py", "движок/engine.py")
+          raw("движок/перефразы.json", "движок/перефразы.json")
+          raw("движок/наборы.json", "движок/наборы.json", 10)
+          raw("движок/результат/вект-записи.npy", "движок/данные/вект-записи.npy", 1_000_000)
+          raw("движок/результат/вект-записи_ном.npy", "движок/данные/вект-записи_ном.npy", 1000)
+          PY
+
+      - name: Модели (bge-m3 + реранкер)
+        run: |
+          mkdir -p движок/модели/bge-m3-onnx движок/модели/реранк
+          python - <<'PY'
+          import urllib.request, sys, os
+          def качать(url, куда, минимум):
+              req = urllib.request.Request(url, headers={"User-Agent": "arena"})
+              д = urllib.request.urlopen(req, timeout=1800).read()
+              if len(д) < минимум:
+                  print(f"::error title=скачивание::{куда} {len(д)} байт"); sys.exit(1)
+              open(куда, "wb").write(д); print(os.path.basename(куда), len(д)//1048576, "МБ", flush=True)
+          b3 = "https://huggingface.co/Xenova/bge-m3/resolve/main/"
+          качать(b3+"onnx/model_int8.onnx", "движок/модели/bge-m3-onnx/model_int8.onnx", 500_000_000)
+          for ф in ("tokenizer.json","tokenizer_config.json","config.json"):
+              качать(b3+ф, "движок/модели/bge-m3-onnx/"+ф, 10)
+          rr = "https://huggingface.co/metalmon80/bge-reranker-v2-m3-en-ru-onnx/resolve/main/"
+          качать(rr+"model.int8.onnx", "движок/модели/реранк/model.int8.onnx", 300_000_000)
+          for ф in ("tokenizer.json","tokenizer_config.json","config.json"):
+              качать(rr+ф, "движок/модели/реранк/"+ф, 10)
+          for url, куда in [("https://huggingface.co/BAAI/bge-m3/resolve/main/sentencepiece.bpe.model",
+                             "движок/модели/bge-m3-onnx/sentencepiece.bpe.model"),
+                            ("https://huggingface.co/BAAI/bge-reranker-v2-m3/resolve/main/sentencepiece.bpe.model",
+                             "движок/модели/реранк/sentencepiece.bpe.model")]:
+              try: качать(url, куда, 1_000_000)
+              except SystemExit: pass
+          PY
+          ls -la движок/модели/*/
+
+      - name: Замер: без реранкера / с реранкером
+        run: |
+          cd движок
+          python - 2>&1 <<'PY' | tee /tmp/rr.log
+          import importlib.util, os, json, sqlite3, traceback, sys
+          spec = importlib.util.spec_from_file_location("eng", "engine.py")
+          E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+          try:
+              print("RAM доступно:", E.доступно_мб(), "МБ", flush=True)
+              print("> индекс", flush=True); E.перестроить()
+              con = sqlite3.connect("file:данные/поиск-индекс.db?mode=ro", uri=True)
+              досл = [(1951,1952),(1953,1954),(2084,2085),(2086,2087),(2098,2099),(2100,2101)]
+              вопросы = [con.execute("SELECT substr(текст,1,400) FROM записи WHERE н=?", (в,)).fetchone()[0]
+                         for в,_ in досл]
+              пер = json.load(open("перефразы.json", encoding="utf-8"))
+              новые = json.load(open("перефразы-новые.json", encoding="utf-8")) if os.path.exists("перефразы-новые.json") else []
+
+              def замер(метка, с_рер):
+                  с1=х1=0
+                  for в, (_, о_н) in zip(вопросы, досл):
+                      н=[р["н"] for р in E.искать(в,10,с_реранком=с_рер)]
+                      if о_н in н: с1 += 1.0/(н.index(о_н)+1); х1+=1
+                  с2=х2=0
+                  for п in пер:
+                      н=[р["н"] for р in E.искать(п["вопрос"],10,с_реранком=с_рер)]
+                      if п["ответ"] in н: с2 += 1.0/(н.index(п["ответ"])+1); х2+=1
+                  с3=х3=0
+                  for п in новые:
+                      н=[р["н"] for р in E.искать(п["вопрос"],10,с_реранком=с_рер)]
+                      if п["ответ"] in н: с3 += 1.0/(н.index(п["ответ"])+1); х3+=1
+                  print(f"{метка}: дословные {х1}/6 MRR {с1/6:.3f} | настроечные {х2}/10 MRR {с2/10:.3f}"
+                          + (f" | новые {х3}/{len(новые)} MRR {с3/max(len(новые),1):.3f}" if новые else ""), flush=True)
+                  return (х1, с1/6, х2, с2/10, х3, с3/max(len(новые),1))
+
+              print("=== БЕЗ реранкера ===", flush=True); а = замер("без", False)
+              print("=== С реранкером ===", flush=True); б = замер("с", True)
+              print(f"\nПРИРОСТ: дословные {а[0]}→{б[0]} (MRR {а[1]:.3f}→{б[1]:.3f}) | "
+                    f"настроечные {а[2]}→{б[2]} (MRR {а[3]:.3f}→{б[3]:.3f}) | "
+                    f"новые {а[4]}→{б[4]} (MRR {а[5]:.3f}→{б[5]:.3f})", flush=True)
+          except Exception:
+              traceback.print_exc()
+              print("::error title=замер::" + repr(sys.exc_info()[1])[:250]); sys.exit(1)
+          PY
+
+      - name: Лог в артефакт
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rerank-eval
+          path: /tmp/rr.log
+          retention-days: 7
