@@ -77,11 +77,15 @@ jobs:
         run: |
           cd движок
           python - 2>&1 <<'PY' | tee /tmp/b.log
-          import importlib.util, traceback, sys
+          import importlib.util, traceback, sys, os, glob
           spec = importlib.util.spec_from_file_location("eng", "engine.py")
           E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
           try:
               print("> эмбеддинги", flush=True); E.эмбеддинги()
+              файлы = glob.glob("данные/вект-записи*.npy")
+              print("> файлы векторов:", файлы, flush=True)
+              if not файлы:
+                  raise RuntimeError("вект-записи.npy не создан")
               print("> B ГОТОВО", flush=True)
           except Exception:
               traceback.print_exc()
@@ -153,8 +157,7 @@ jobs:
         with:
           name: memory-engine-result
           path: |
-            движок/данные/*.db
-            движок/данные/*.npy
+            движок/данные/вект-записи*.npy
             /tmp/a.log
             /tmp/b.log
           retention-days: 14
