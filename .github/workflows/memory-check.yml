@@ -72,12 +72,33 @@ jobs:
         run: |
           mkdir -p движок/модели/bge-m3-onnx
           cd движок/модели/bge-m3-onnx
-          base="https://huggingface.co/Xenova/bge-m3/resolve/main"
-          for ф in onnx/model_int8.onnx tokenizer.json tokenizer_config.json special_tokens_map.json config.json; do
-            curl -sSL -o "$(basename $ф)" "$base/$ф"
-          done
-          # sentencepiece-модель bge-m3: нужна, если tokenizer.json не парсится
-          curl -sSL -o sentencepiece.bpe.model "https://huggingface.co/BAAI/bge-m3/resolve/main/sentencepiece.bpe.model"
+          # curl без --fail молча писал пустоту (так файл модели и «терялся»).
+          # Скачиваем через Python с проверкой размера: модель 542 МБ.
+          python - <<'PY'
+          import urllib.request, os, sys
+          база = "https://huggingface.co/Xenova/bge-m3/resolve/main"
+          файлы = {"onnx/model_int8.onnx": "model_int8.onnx",
+                   "tokenizer.json": "tokenizer.json",
+                   "tokenizer_config.json": "tokenizer_config.json",
+                   "special_tokens_map.json": "special_tokens_map.json",
+                   "config.json": "config.json"}
+          for путь, имя in файлы.items():
+              req = urllib.request.Request(f"{база}/{путь}", headers={"User-Agent": "arena"})
+              данные = urllib.request.urlopen(req, timeout=900).read()
+              open(имя, "wb").write(данные)
+              print(имя, len(данные), "байт", flush=True)
+              if len(данные) < 1000:
+                  print(f"::error title=скачивание::{имя} пустой"); sys.exit(1)
+          if os.path.getsize("model_int8.onnx") < 500_000_000:
+              print("::error title=модель::model_int8.onnx меньше 500 МБ"); sys.exit(1)
+          # sentencepiece-модель для фолбэка токенизатора
+          req = urllib.request.Request(
+              "https://huggingface.co/BAAI/bge-m3/resolve/main/sentencepiece.bpe.model",
+              headers={"User-Agent": "arena"})
+          сп = urllib.request.urlopen(req, timeout=300).read()
+          open("sentencepiece.bpe.model", "wb").write(сп)
+          print("sentencepiece.bpe.model", len(сп), "байт")
+          PY
           ls -la
           python - <<'PY'
           from transformers import AutoTokenizer
@@ -85,12 +106,7 @@ jobs:
               т = AutoTokenizer.from_pretrained(".")
               print("токенизатор ок (быстрый):", type(т).__name__)
           except Exception as e:
-              print("быстрый не поднялся:", repr(e)[:200])
-              from transformers import XLMRobertaTokenizer
-              т = XLMRobertaTokenizer.from_pretrained(".")
-              print("взял XLMRobertaTokenizer:", type(т).__name__)
-          enc = т(["проверка русского текста"])
-          print("проверка ок:", enc["input_ids"][:8])
+              print("быстрый не поднялся:", repr(e)[:150], "— будет sentencepiece-фолбэк")
           PY
 
       - name: ПРОВЕРКА ТОКЕНИЗАТОРА
