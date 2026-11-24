@@ -5,9 +5,9 @@ on:
   workflow_dispatch:
     inputs:
       vectors:
-        description: "vectors=skip — не пересчитывать векторы"
+        description: "vectors=recalc — ПЕРЕСЧИТАТЬ векторы (замер: ONNX-пересчёт хуже torch!)"
         required: false
-        default: ""
+        default: "skip"
 
 permissions:
   contents: read
@@ -59,6 +59,10 @@ jobs:
           raw("движок/наборы.json", "движок/наборы.json", 10)
           raw("движок/результат/вект-записи.npy", "движок/данные/вект-записи.npy", 1_000_000)
           raw("движок/результат/вект-записи_ном.npy", "движок/данные/вект-записи_ном.npy", 1000)
+          try: raw("движок/данные/вект-вопросы.npy", "движок/данные/вект-вопросы.npy", 100000)
+          except Exception as e: print("векторы вопросов не скачались:", repr(e)[:120])
+          try: raw("движок/данные/вект-вопросы_ном.npy", "движок/данные/вект-вопросы_ном.npy", 100)
+          except Exception as e: print("номера вопросов не скачались:", repr(e)[:120])
           PY
 
       - name: Модели (bge-m3 + реранкер)
@@ -90,7 +94,7 @@ jobs:
           ls -la движок/модели/*/
 
       - name: "Пересчёт векторов единым ONNX-эмбеддером"
-        if: github.event.inputs.vectors != 'skip'
+        if: github.event.inputs.vectors == 'recalc'
         run: |
           cd движок
           exec > >(tee /tmp/vect.log) 2>&1
