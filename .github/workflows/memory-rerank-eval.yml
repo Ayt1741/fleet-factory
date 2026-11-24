@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       vectors:
-        description: "vectors=recalc — ПЕРЕСЧИТАТЬ векторы (замер: ONNX-пересчёт хуже torch!)"
+        description: "vectors=e5 — пересчитать векторы multilingual-e5-large (torch)"
         required: false
         default: "skip"
 
@@ -31,6 +31,7 @@ jobs:
         run: |
           pip install --quiet --upgrade pip
           pip install --quiet onnxruntime==1.19.2 transformers tokenizers sentencepiece pymorphy3 numpy
+          pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu || pip install --quiet torch
           free -m | head -2
 
       - name: Забрать движок, векторы, наборы
@@ -64,6 +65,43 @@ jobs:
           try: raw("движок/данные/вект-вопросы_ном.npy", "движок/данные/вект-вопросы_ном.npy", 100)
           except Exception as e: print("номера вопросов не скачались:", repr(e)[:120])
           PY
+
+      - name: "Пересчёт векторов e5-large (если vectors=e5)"
+        if: github.event.inputs.vectors == 'e5'
+        run: |
+          cd движок
+          exec > >(tee /tmp/e5.log) 2>&1
+          python - <<'PY'
+          import importlib.util, os, sys, json, base64, urllib.request, urllib.parse, traceback
+          spec = importlib.util.spec_from_file_location("eng", "engine.py")
+          E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+          try:
+              E.скачать_журнал(); E.перестроить()
+              n = E.пересчитать_векторы_torch("intfloat/multilingual-e5-large")
+              print("векторов e5:", n, flush=True)
+          except Exception:
+              traceback.print_exc(); print("::error title=e5::" + repr(sys.exc_info()[1])[:250]); sys.exit(1)
+          пат = os.environ.get("PAT", "")
+          def put(путь, байты):
+              импорт = urllib.parse.quote(путь)
+              req = urllib.request.Request(f"https://api.github.com/repos/Ayt1741/hranilishe/contents/{импорт}",
+                  headers={"Authorization": f"Bearer {пат}", "User-Agent": "arena", "Accept": "application/vnd.github+json"})
+              ша = None
+              try: ша = json.loads(urllib.request.urlopen(req, timeout=60).read()).get("sha")
+              except Exception: pass
+              тело = {"message": "векторы multilingual-e5-large", "content": base64.b64encode(байты).decode()}
+              if ша: тело["sha"] = ша
+              req2 = urllib.request.Request(f"https://api.github.com/repos/Ayt1741/hranilishe/contents/{импорт}",
+                  method="PUT", data=json.dumps(тело).encode(),
+                  headers={"Authorization": f"Bearer {пат}", "User-Agent": "arena",
+                           "Accept": "application/vnd.github+json", "Content-Type": "application/json"})
+              print("залито:", путь, len(байты)//1048576, "МБ", flush=True)
+              urllib.request.urlopen(req2, timeout=600).read()
+          for ф in ("данные/вект-записи.npy", "данные/вект-записи_ном.npy"):
+              put("движок/результат-e5/" + os.path.basename(ф), open(ф, "rb").read())
+          PY
+        env:
+          PAT: ${{ secrets.HRANILISHE_PAT }}
 
       - name: Модели (bge-m3 + реранкер)
         run: |
