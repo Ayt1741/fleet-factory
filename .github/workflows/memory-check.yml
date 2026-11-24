@@ -1,0 +1,96 @@
+name: memory-check
+# Проверка в облаке: скачивает готовый движок + векторы из hranilishe,
+# строит индекс, качает bge-m3 ONNX и прогоняет замер перефразов.
+# Зачем: подтвердить, что результат не «локальный артефакт», а воспроизводится на чистой машине.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+  LC_ALL: C.UTF-8
+  TOKENIZERS_PARALLELISM: "false"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Зависимости
+        run: |
+          pip install --quiet --upgrade pip
+          pip install --quiet onnxruntime==1.19.2 transformers pymorphy3 numpy
+          python -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute('CREATE VIRTUAL TABLE t USING fts5(x)'); print('FTS5 ок')"
+
+      - name: Забрать движок, векторы, наборы
+        env:
+          PAT: ${{ secrets.HRANILISHE_PAT }}
+        run: |
+          mkdir -p движок/данные
+          python - <<'PY'
+          import os, base64, urllib.request, urllib.parse, json
+          пат = os.environ["PAT"]
+          def залить(путь, куда):
+              req = urllib.request.Request(
+                  "https://api.github.com/repos/Ayt1741/hranilishe/contents/" + urllib.parse.quote(путь),
+                  headers={"Authorization": f"Bearer {пат}", "User-Agent": "arena",
+                           "Accept": "application/vnd.github+json"})
+              d = json.loads(urllib.request.urlopen(req, timeout=120).read())
+              open(куда, "wb").write(base64.b64decode(d["content"]))
+              print(куда, os.path.getsize(куда)//1024, "КБ")
+          for путь, куда in [
+              ("движок/engine.py", "движок/engine.py"),
+              ("движок/перефразы.json", "движок/перефразы.json"),
+              ("движок/результат/вект-записи.npy", "движок/данные/вект-записи.npy"),
+              ("движок/результат/вект-записи_ном.npy", "движок/данные/вект-записи_ном.npy"),
+          ]:
+              залить(путь, куда)
+          PY
+
+      - name: bge-m3 ONNX int8
+        run: |
+          mkdir -p движок/модели/bge-m3-onnx
+          cd движок/модели/bge-m3-onnx
+          base="https://huggingface.co/Xenova/bge-m3/resolve/main"
+          for ф in onnx/model_int8.onnx tokenizer.json tokenizer_config.json special_tokens_map.json config.json; do
+            curl -sSL -o "$(basename $ф)" "$base/$ф"
+          done
+          ls -la
+
+      - name: Индекс + замер перефразов
+        run: |
+          cd движок
+          python - 2>&1 <<'PY' | tee /tmp/eval.log
+          import importlib.util, traceback, sys
+          spec = importlib.util.spec_from_file_location("eng", "engine.py")
+          E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+          try:
+              print("> журнал", flush=True); E.скачать_журнал()
+              print("> индекс", flush=True); E.перестроить()
+              print("> замер перефразов", flush=True)
+              E.__dict__["__name__"] = "__main__"
+              import json
+              н = json.load(open("перефразы.json", encoding="utf-8"))
+              пары = [(п["вопрос"], п["ответ"]) for п in н]
+              mrr, хиты = E.замер(пары, "ПЕРЕФРАЗЫ")
+              print(f"> ИТОГ: {хиты}/10, MRR {mrr:.3f}", flush=True)
+          except Exception:
+              traceback.print_exc()
+              print("::error title=проверка::" + repr(sys.exc_info()[1])[:300])
+              sys.exit(1)
+          PY
+
+      - name: Отдать лог
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-result
+          path: /tmp/eval.log
+          retention-days: 7
