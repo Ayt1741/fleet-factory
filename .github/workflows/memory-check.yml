@@ -26,7 +26,7 @@ jobs:
       - name: Зависимости
         run: |
           pip install --quiet --upgrade pip
-          pip install --quiet onnxruntime==1.19.2 transformers pymorphy3 numpy
+          pip install --quiet onnxruntime==1.19.2 transformers tokenizers sentencepiece pymorphy3 numpy
           python -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute('CREATE VIRTUAL TABLE t USING fts5(x)'); print('FTS5 ок')"
 
       - name: Забрать движок, векторы, наборы
