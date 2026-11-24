@@ -1,0 +1,236 @@
+name: memory-engine-shards
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: "сколько шардов"
+        required: false
+        default: "8"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+  LC_ALL: C.UTF-8
+  HF_HOME: ${{ github.workspace }}/.hf
+  TOKENIZERS_PARALLELISM: "false"
+
+jobs:
+  # Шаг A один раз: журнал + индекс → артефакт, чтобы 8 джоб не качали и не строили его заново
+  base:
+    name: "A — журнал и индекс"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Зависимости
+        run: |
+          pip install --quiet --upgrade pip
+          pip install --quiet onnxruntime==1.19.2 transformers sentence-transformers pymorphy3 numpy
+      - name: Скачать движок
+        run: |
+          mkdir -p движок
+          curl -sSL -o движок/engine.py "https://raw.githubusercontent.com/Ayt1741/hranilishe/main/%D0%B4%D0%B2%D0%B8%D0%B6%D0%BE%D0%BA/engine.py"
+          wc -l движок/engine.py
+      - name: A — журнал и индекс
+        run: |
+          cd движок
+          python - 2>&1 <<'PY' | tee /tmp/a.log
+          import importlib.util, traceback, sys
+          spec = importlib.util.spec_from_file_location("eng", "engine.py")
+          E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+          try:
+              print("> журнал", flush=True); E.скачать_журнал()
+              print("> индекс", flush=True); E.перестроить()
+              print("> A ГОТОВО", flush=True)
+          except Exception:
+              traceback.print_exc()
+              print("::error title=A failed::" + repr(sys.exc_info()[1])[:300])
+              sys.exit(1)
+          PY
+      - name: Отдать индекс
+        uses: actions/upload-artifact@v4
+        with:
+          name: base-index
+          path: |
+            движок/данные/поиск-индекс.db
+            движок/данные/журнал.jsonl.gz
+          retention-days: 3
+          if-no-files-found: error
+
+  shard:
+    needs: base
+    name: "B — шард ${{ matrix.shard }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Зависимости
+        run: |
+          pip install --quiet --upgrade pip
+          pip install --quiet sentence-transformers numpy
+      - name: Забрать индекс
+        uses: actions/download-artifact@v4
+        with:
+          name: base-index
+          path: движок/данные
+      - name: Скачать движок
+        run: |
+          mkdir -p движок
+          curl -sSL -o движок/engine.py "https://raw.githubusercontent.com/Ayt1741/hranilishe/main/%D0%B4%D0%B2%D0%B8%D0%B6%D0%BE%D0%BA/engine.py"
+          wc -l движок/engine.py
+      - name: B — шард ${{ matrix.shard }}
+        run: |
+          cd движок
+          python - ${{ matrix.shard }} 2>&1 <<'PY' | tee /tmp/b.log
+          import importlib.util, traceback, sys, glob
+          ш = int(sys.argv[1])
+          spec = importlib.util.spec_from_file_location("eng", "engine.py")
+          E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+          try:
+              E.эмбеддинги(ш, 8)
+              файлы = glob.glob(f"данные/вект-записи.шард{ш}*.npy")
+              print("> файлы шарда:", файлы, flush=True)
+              if not файлы:
+                  raise RuntimeError("шард не создан")
+              print("> B ГОТОВО", flush=True)
+          except Exception:
+              traceback.print_exc()
+              print("::error title=B failed::" + repr(sys.exc_info()[1])[:300])
+              sys.exit(1)
+          PY
+      - name: Отдать шард
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.shard }}
+          path: |
+            движок/данные/вект-записи.шард*.npy
+            /tmp/b.log
+          retention-days: 3
+          if-no-files-found: warn
+
+  merge:
+    needs: shard
+    name: "C — склейка + замер"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Зависимости
+        run: |
+          pip install --quiet --upgrade pip
+          pip install --quiet onnxruntime==1.19.2 transformers sentence-transformers pymorphy3 numpy
+      - name: Забрать индекс и шарды
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "{base-index,shard-*}"
+          path: движок/данные
+          merge-multiple: true
+      - name: Скачать движок
+        run: |
+          mkdir -p движок2 && curl -sSL -o движок2/engine.py "https://raw.githubusercontent.com/Ayt1741/hranilishe/main/%D0%B4%D0%B2%D0%B8%D0%B6%D0%BE%D0%BA/engine.py"
+          ls движок/данные | head -30
+          ls движок2
+      - name: Скачать реранкер
+        run: |
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download("metalmon80/bge-reranker-v2-m3-en-ru-onnx", local_dir="движок2/модели/реранк",
+                            allow_patterns=["model.int8.onnx","tokenizer.json","config.json",
+                                            "tokenizer_config.json","special_tokens_map.json","vocab.txt","*.model"])
+          print("реранк ок")
+          PY
+      - name: C — склейка и замер
+        run: |
+          cp движок/данные/*.db движок/данные/*.gz движок2/данные/ 2>/dev/null || true
+          cp движок/данные/вект-записи.шард*.npy движок2/данные/ 2>/dev/null || true
+          cd движок2
+          python - 2>&1 <<'PY' | tee /tmp/c.log
+          import importlib.util, traceback, sys, json, os
+          spec = importlib.util.spec_from_file_location("eng", "engine.py")
+          E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+          try:
+              print("> склейка", flush=True); E.склеить_шарды()
+              н = json.load(open("наборы.json", encoding="utf-8")) if os.path.exists("наборы.json") else []
+              print("пар в наборе:", len(н), flush=True)
+              if н:
+                  пары = [(п["вопрос"], п["ответ"]) for п in н]
+                  print("--- замер с векторами ---", flush=True)
+                  E.замер(пары, "с векторами bge-m3")
+                  os.environ["ПФ_БЕЗ_ВЕКТОРОВ"] = "1"
+                  E._ВЕК.clear()
+                  print("--- замер без векторов ---", flush=True)
+                  E.замер(пары, "без векторов")
+              print("> C ГОТОВО", flush=True)
+          except Exception:
+              traceback.print_exc()
+              print("::error title=C failed::" + repr(sys.exc_info()[1])[:300])
+              sys.exit(1)
+          PY
+      - name: Опубликовать в hranilishe
+        if: always()
+        env:
+          PAT: ${{ secrets.HRANILISHE_PAT }}
+        run: |
+          cd движок2
+          ls -la данные/ || true
+          python - <<'PY'
+          import os, json, base64, urllib.request, urllib.parse, glob
+          пат = os.environ.get("PAT","")
+          if not пат:
+              raise SystemExit(0)
+          def put(путь, файл, сообщение):
+              данные = open(файл,"rb").read()
+              if len(данные) > 45*1024*1024:
+                  print("слишком большой:", файл, len(данные)//1048576, "МБ"); return
+              импорт = urllib.parse.quote(путь)
+              req = urllib.request.Request(f"https://api.github.com/repos/Ayt1741/hranilishe/contents/{импорт}",
+                  headers={"Authorization":f"Bearer {пат}","User-Agent":"arena","Accept":"application/vnd.github+json"})
+              ша = None
+              try:
+                  ша = json.loads(urllib.request.urlopen(req, timeout=60).read()).get("sha")
+              except Exception: pass
+              тело = {"message": сообщение, "content": base64.b64encode(данные).decode()}
+              if ша: тело["sha"] = ша
+              req2 = urllib.request.Request(f"https://api.github.com/repos/Ayt1741/hranilishe/contents/{импорт}",
+                  method="PUT", data=json.dumps(тело).encode(),
+                  headers={"Authorization":f"Bearer {пат}","User-Agent":"arena","Accept":"application/vnd.github+json","Content-Type":"application/json"})
+              try:
+                  r = json.loads(urllib.request.urlopen(req2, timeout=600).read())
+                  print("залито:", путь, (r.get("commit") or {}).get("sha","")[:8])
+              except Exception as e:
+                  print("::warning title=заливка::" + путь + " — " + str(e)[:120])
+          for ф in glob.glob("данные/вект-записи*.npy"):
+              put("движок/результат/" + os.path.basename(ф), ф, "векторы записей (шарды, float16→float32)")
+          отчёт = {"прогон": os.environ.get("GITHUB_RUN_ID"), "файлы": []}
+          for ф in glob.glob("данные/*"):
+              отчёт["файлы"].append({"имя": os.path.basename(ф), "байт": os.path.getsize(ф)})
+          open("/tmp/отчёт.json","w").write(json.dumps(отчёт, ensure_ascii=False, indent=1))
+          put("движок/результат/отчёт.json", "/tmp/отчёт.json", "отчёт о сборке шардами")
+          print(json.dumps(отчёт, ensure_ascii=False, indent=1))
+          PY
+      - name: Отдать результат
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shards-result
+          path: |
+            движок2/данные/вект-записи*.npy
+            /tmp/c.log
+          retention-days: 7
+          if-no-files-found: warn
