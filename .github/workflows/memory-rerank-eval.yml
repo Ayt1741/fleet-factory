@@ -48,6 +48,8 @@ jobs:
               print(куда, len(данные), "байт")
           raw("движок/engine.py", "движок/engine.py")
           raw("движок/перефразы.json", "движок/перефразы.json")
+          try: raw("движок/перефразы-20.json", "движок/перефразы-20.json")
+          except SystemExit as e: print("набора 20 нет:", e)
           raw("движок/наборы.json", "движок/наборы.json", 10)
           raw("движок/результат/вект-записи.npy", "движок/данные/вект-записи.npy", 1_000_000)
           raw("движок/результат/вект-записи_ном.npy", "движок/данные/вект-записи_ном.npy", 1000)
@@ -114,7 +116,7 @@ jobs:
               вопросы = [con.execute("SELECT substr(текст,1,400) FROM записи WHERE н=?", (в,)).fetchone()[0]
                          for в,_ in досл]
               пер = json.load(open("перефразы.json", encoding="utf-8"))
-              новые = json.load(open("перефразы-новые.json", encoding="utf-8")) if os.path.exists("перефразы-новые.json") else []
+              новые = json.load(open("перефразы-20.json", encoding="utf-8")) if os.path.exists("перефразы-20.json") else []
 
               def замер(метка, с_рер):
                   с1=х1=0
