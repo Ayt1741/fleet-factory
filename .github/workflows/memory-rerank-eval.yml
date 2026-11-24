@@ -86,10 +86,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.HRANILISHE_PAT }}
         run: |
           cd движок
-          echo "=== ЧТО В ПАПКЕ данные ==="
+          exec > >(tee /tmp/rr.log) 2>&1
+          echo "=== ОКРУЖЕНИЕ ==="
           ls -la данные/ 2>&1 || echo "папки данные НЕТ"
-          echo "=== ЧТО В движок ==="
-          ls -la 2>&1 | head -20
+          ls -la 2>&1 | head -15
+          echo "GITHUB_TOKEN задан: $([ -n "$GITHUB_TOKEN" ] && echo да || echo НЕТ)"
+
           python - 2>&1 <<'PY' | tee /tmp/rr.log
           import importlib.util, os, json, sqlite3, traceback, sys
           spec = importlib.util.spec_from_file_location("eng", "engine.py")
