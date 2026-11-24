@@ -82,6 +82,8 @@ jobs:
           ls -la движок/модели/*/
 
       - name: "Замер без реранкера и с реранкером"
+        env:
+          GITHUB_TOKEN: ${{ secrets.HRANILISHE_PAT }}
         run: |
           cd движок
           python - 2>&1 <<'PY' | tee /tmp/rr.log
@@ -90,7 +92,10 @@ jobs:
           E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
           try:
               print("RAM доступно:", E.доступно_мб(), "МБ", flush=True)
-              print("> индекс", flush=True); E.перестроить()
+              print("> индекс", flush=True); зап, куск = E.перестроить()
+              if зап < 2000:
+                  # урок: без GITHUB_TOKEN журнал не скачивался и индекс выходил пустым
+                  print(f"::error title=индекс::только {зап} записей — журнал не скачался"); sys.exit(1)
               con = sqlite3.connect("file:данные/поиск-индекс.db?mode=ro", uri=True)
               досл = [(1951,1952),(1953,1954),(2084,2085),(2086,2087),(2098,2099),(2100,2101)]
               вопросы = [con.execute("SELECT substr(текст,1,400) FROM записи WHERE н=?", (в,)).fetchone()[0]
