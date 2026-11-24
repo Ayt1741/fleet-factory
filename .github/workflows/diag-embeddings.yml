@@ -1,0 +1,41 @@
+name: diag-embeddings
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Установка
+        run: |
+          pip install --quiet --upgrade pip
+          pip install --quiet numpy
+          echo "=== ставим torch CPU ==="
+          pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu 2>&1 | tail -3
+          pip install --quiet sentence-transformers 2>&1 | tail -3
+          python -c "import torch, sentence_transformers; print('torch', torch.__version__, '| st', sentence_transformers.__version__)"
+          free -m | head -2
+          df -h / | tail -1
+
+      - name: Пробуем bge-m3 на 10 строках
+        run: |
+          python - 2>&1 <<'PY'
+          import traceback, sys, time
+          try:
+              from sentence_transformers import SentenceTransformer
+              t0=time.time()
+              print("загружаю bge-m3...", flush=True)
+              м = SentenceTransformer("BAAI/bge-m3", device="cpu")
+              print("загружено за", round(time.time()-t0,1), "с, размерность:", м.get_sentence_embedding_dimension(), flush=True)
+              E = м.encode(["поиск по памяти", "флот сорок агентов"], normalize_embeddings=True, convert_to_numpy=True)
+              print("векторы:", E.shape, float(E[0] @ E[1]), flush=True)
+              print("::notice title=OK::bge-m3 работает")
+          except Exception:
+              traceback.print_exc()
+              print("::error title=FAIL::" + repr(sys.exc_info()[1])[:400])
+              sys.exit(1)
+          PY
