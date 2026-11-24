@@ -96,15 +96,16 @@ jobs:
       - name: ПРОВЕРКА ТОКЕНИЗАТОРА
         run: |
           cd движок
-          python - <<'PY'
-          import sys, importlib.util
+          python - 2>&1 <<'PY' | tee /tmp/tok.log
+          import sys, importlib.util, traceback
           spec = importlib.util.spec_from_file_location("eng", "engine.py")
           E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
           try:
               v = E.вектор_запроса("проверка")
               print("токенизатор ок, режим:", E._ВЕК.get("режим"), "| вектор:", v.shape)
-          except Exception as e:
-              print("::error title=токенизатор::" + repr(e)[:250]); sys.exit(1)
+          except Exception:
+              traceback.print_exc()
+              print("::error title=токенизатор::" + repr(sys.exc_info()[1])[:250]); sys.exit(1)
           PY
 
       - name: Индекс + замер перефразов
@@ -135,5 +136,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: check-result
-          path: /tmp/eval.log
+          path: |
+            /tmp/eval.log
+            /tmp/tok.log
           retention-days: 7
