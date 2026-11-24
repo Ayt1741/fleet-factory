@@ -3,6 +3,11 @@ name: memory-rerank-eval
 # Сравнивает одно и то же на одних и тех же наборах: без реранкера / с реранкером.
 on:
   workflow_dispatch:
+    inputs:
+      vectors:
+        description: "vectors=skip — не пересчитывать векторы"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -54,6 +59,46 @@ jobs:
           raw("движок/результат/вект-записи.npy", "движок/данные/вект-записи.npy", 1_000_000)
           raw("движок/результат/вект-записи_ном.npy", "движок/данные/вект-записи_ном.npy", 1000)
           PY
+
+      - name: "Пересчёт векторов единым ONNX-эмбеддером"
+        if: github.event.inputs.vectors != 'skip'
+        run: |
+          cd движок
+          exec > >(tee /tmp/vect.log) 2>&1
+          python - <<'PY'
+          import importlib.util, os, sys, json, base64, urllib.request, urllib.parse, traceback
+          spec = importlib.util.spec_from_file_location("eng", "engine.py")
+          E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+          try:
+              print("RAM:", E.доступно_мб(), "МБ", flush=True)
+              E.скачать_журнал()
+              E.перестроить()
+              Е = E.пересчитать_векторы()
+              print("векторов:", Е, flush=True)
+          except Exception:
+              traceback.print_exc(); print("::error title=векторы::" + repr(sys.exc_info()[1])[:250]); sys.exit(1)
+          # заливаем сразу, не дожидаясь конца джобы (лимит 90 мин)
+          пат = os.environ.get("PAT", "")
+          def put(путь, байты):
+              импорт = urllib.parse.quote(путь)
+              req = urllib.request.Request(f"https://api.github.com/repos/Ayt1741/hranilishe/contents/{импорт}",
+                  headers={"Authorization": f"Bearer {пат}", "User-Agent": "arena", "Accept": "application/vnd.github+json"})
+              ша = None
+              try: ша = json.loads(urllib.request.urlopen(req, timeout=60).read()).get("sha")
+              except Exception: pass
+              тело = {"message": "векторы: единый ONNX-эмбеддер", "content": base64.b64encode(байты).decode()}
+              if ша: тело["sha"] = ша
+              req2 = urllib.request.Request(f"https://api.github.com/repos/Ayt1741/hranilishe/contents/{импорт}",
+                  method="PUT", data=json.dumps(тело).encode(),
+                  headers={"Authorization": f"Bearer {пат}", "User-Agent": "arena",
+                           "Accept": "application/vnd.github+json", "Content-Type": "application/json"})
+              print("залито:", путь, len(байты)//1048576, "МБ", flush=True)
+              urllib.request.urlopen(req2, timeout=600).read()
+          for ф in ("данные/вект-записи.npy", "данные/вект-записи_ном.npy"):
+              put("движок/результат/" + os.path.basename(ф), open(ф, "rb").read())
+          PY
+        env:
+          PAT: ${{ secrets.HRANILISHE_PAT }}
 
       - name: Модели (bge-m3 + реранкер)
         run: |
