@@ -68,7 +68,7 @@ jobs:
               залить(путь, куда)
           PY
 
-      - name: bge-m3 ONNX int8
+      - name: bge-m3 ONNX int8 + токенизатор
         run: |
           mkdir -p движок/модели/bge-m3-onnx
           cd движок/модели/bge-m3-onnx
@@ -76,7 +76,22 @@ jobs:
           for ф in onnx/model_int8.onnx tokenizer.json tokenizer_config.json special_tokens_map.json config.json; do
             curl -sSL -o "$(basename $ф)" "$base/$ф"
           done
+          # sentencepiece-модель bge-m3: нужна, если tokenizer.json не парсится
+          curl -sSL -o sentencepiece.bpe.model "https://huggingface.co/BAAI/bge-m3/resolve/main/sentencepiece.bpe.model"
           ls -la
+          python - <<'PY'
+          from transformers import AutoTokenizer
+          try:
+              т = AutoTokenizer.from_pretrained(".")
+              print("токенизатор ок (быстрый):", type(т).__name__)
+          except Exception as e:
+              print("быстрый не поднялся:", repr(e)[:200])
+              from transformers import XLMRobertaTokenizer
+              т = XLMRobertaTokenizer.from_pretrained(".")
+              print("взял XLMRobertaTokenizer:", type(т).__name__)
+          enc = т(["проверка русского текста"])
+          print("проверка ок:", enc["input_ids"][:8])
+          PY
 
       - name: Индекс + замер перефразов
         run: |
