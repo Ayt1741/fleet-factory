@@ -60,6 +60,34 @@ jobs:
           raw("движок/результат/вект-записи_ном.npy", "движок/данные/вект-записи_ном.npy", 1000)
           PY
 
+      - name: Модели (bge-m3 + реранкер)
+        run: |
+          mkdir -p движок/модели/bge-m3-onnx движок/модели/реранк
+          python - <<'PY'
+          import urllib.request, sys, os
+          def качать(url, куда, минимум):
+              req = urllib.request.Request(url, headers={"User-Agent": "arena"})
+              д = urllib.request.urlopen(req, timeout=1800).read()
+              if len(д) < минимум:
+                  print(f"::error title=скачивание::{куда} {len(д)} байт"); sys.exit(1)
+              open(куда, "wb").write(д); print(os.path.basename(куда), len(д)//1048576, "МБ", flush=True)
+          b3 = "https://huggingface.co/Xenova/bge-m3/resolve/main/"
+          качать(b3+"onnx/model_int8.onnx", "движок/модели/bge-m3-onnx/model_int8.onnx", 500_000_000)
+          for ф in ("tokenizer.json","tokenizer_config.json","config.json"):
+              качать(b3+ф, "движок/модели/bge-m3-onnx/"+ф, 10)
+          rr = "https://huggingface.co/metalmon80/bge-reranker-v2-m3-en-ru-onnx/resolve/main/"
+          качать(rr+"model.int8.onnx", "движок/модели/реранк/model.int8.onnx", 300_000_000)
+          for ф in ("tokenizer.json","tokenizer_config.json","config.json"):
+              качать(rr+ф, "движок/модели/реранк/"+ф, 10)
+          for url, куда in [("https://huggingface.co/BAAI/bge-m3/resolve/main/sentencepiece.bpe.model",
+                             "движок/модели/bge-m3-onnx/sentencepiece.bpe.model"),
+                            ("https://huggingface.co/BAAI/bge-reranker-v2-m3/resolve/main/sentencepiece.bpe.model",
+                             "движок/модели/реранк/sentencepiece.bpe.model")]:
+              try: качать(url, куда, 1_000_000)
+              except SystemExit: pass
+          PY
+          ls -la движок/модели/*/
+
       - name: "Пересчёт векторов единым ONNX-эмбеддером"
         if: github.event.inputs.vectors != 'skip'
         run: |
@@ -100,33 +128,6 @@ jobs:
         env:
           PAT: ${{ secrets.HRANILISHE_PAT }}
 
-      - name: Модели (bge-m3 + реранкер)
-        run: |
-          mkdir -p движок/модели/bge-m3-onnx движок/модели/реранк
-          python - <<'PY'
-          import urllib.request, sys, os
-          def качать(url, куда, минимум):
-              req = urllib.request.Request(url, headers={"User-Agent": "arena"})
-              д = urllib.request.urlopen(req, timeout=1800).read()
-              if len(д) < минимум:
-                  print(f"::error title=скачивание::{куда} {len(д)} байт"); sys.exit(1)
-              open(куда, "wb").write(д); print(os.path.basename(куда), len(д)//1048576, "МБ", flush=True)
-          b3 = "https://huggingface.co/Xenova/bge-m3/resolve/main/"
-          качать(b3+"onnx/model_int8.onnx", "движок/модели/bge-m3-onnx/model_int8.onnx", 500_000_000)
-          for ф in ("tokenizer.json","tokenizer_config.json","config.json"):
-              качать(b3+ф, "движок/модели/bge-m3-onnx/"+ф, 10)
-          rr = "https://huggingface.co/metalmon80/bge-reranker-v2-m3-en-ru-onnx/resolve/main/"
-          качать(rr+"model.int8.onnx", "движок/модели/реранк/model.int8.onnx", 300_000_000)
-          for ф in ("tokenizer.json","tokenizer_config.json","config.json"):
-              качать(rr+ф, "движок/модели/реранк/"+ф, 10)
-          for url, куда in [("https://huggingface.co/BAAI/bge-m3/resolve/main/sentencepiece.bpe.model",
-                             "движок/модели/bge-m3-onnx/sentencepiece.bpe.model"),
-                            ("https://huggingface.co/BAAI/bge-reranker-v2-m3/resolve/main/sentencepiece.bpe.model",
-                             "движок/модели/реранк/sentencepiece.bpe.model")]:
-              try: качать(url, куда, 1_000_000)
-              except SystemExit: pass
-          PY
-          ls -la движок/модели/*/
 
       - name: "Замер без реранкера и с реранкером"
         env:
