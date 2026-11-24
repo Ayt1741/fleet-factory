@@ -93,6 +93,20 @@ jobs:
           print("проверка ок:", enc["input_ids"][:8])
           PY
 
+      - name: ПРОВЕРКА ТОКЕНИЗАТОРА
+        run: |
+          cd движок
+          python - <<'PY'
+          import sys, importlib.util
+          spec = importlib.util.spec_from_file_location("eng", "engine.py")
+          E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+          try:
+              v = E.вектор_запроса("проверка")
+              print("токенизатор ок, режим:", E._ВЕК.get("режим"), "| вектор:", v.shape)
+          except Exception as e:
+              print("::error title=токенизатор::" + repr(e)[:250]); sys.exit(1)
+          PY
+
       - name: Индекс + замер перефразов
         run: |
           cd движок
