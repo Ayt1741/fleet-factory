@@ -36,6 +36,7 @@ jobs:
       - name: Забрать движок, векторы, наборы
         env:
           PAT: ${{ secrets.HRANILISHE_PAT }}
+          ПФ_ПЕРЕСЧЁТ: "1"
         run: |
           mkdir -p движок/данные
           python - <<'PY'
@@ -127,6 +128,7 @@ jobs:
           PY
         env:
           PAT: ${{ secrets.HRANILISHE_PAT }}
+          ПФ_ПЕРЕСЧЁТ: "1"
 
 
       - name: "Замер без реранкера и с реранкером"
@@ -196,5 +198,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rerank-eval
-          path: /tmp/rr.log
+          path: |
+            /tmp/rr.log
+            /tmp/vect.log
           retention-days: 7
