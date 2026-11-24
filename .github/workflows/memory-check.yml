@@ -77,18 +77,19 @@ jobs:
           python - <<'PY'
           import urllib.request, os, sys
           база = "https://huggingface.co/Xenova/bge-m3/resolve/main"
-          файлы = {"onnx/model_int8.onnx": "model_int8.onnx",
-                   "tokenizer.json": "tokenizer.json",
-                   "tokenizer_config.json": "tokenizer_config.json",
-                   "special_tokens_map.json": "special_tokens_map.json",
-                   "config.json": "config.json"}
-          for путь, имя in файлы.items():
+          # special_tokens_map.json на HF отдаёт 2 байта ("{}") — это норма, проверяем по-разному
+          файлы = {"onnx/model_int8.onnx": ("model_int8.onnx", 500_000_000),
+                   "tokenizer.json": ("tokenizer.json", 10_000_000),
+                   "tokenizer_config.json": ("tokenizer_config.json", 100),
+                   "special_tokens_map.json": ("special_tokens_map.json", 1),
+                   "config.json": ("config.json", 100)}
+          for путь, (имя, минимум) in файлы.items():
               req = urllib.request.Request(f"{база}/{путь}", headers={"User-Agent": "arena"})
               данные = urllib.request.urlopen(req, timeout=900).read()
               open(имя, "wb").write(данные)
               print(имя, len(данные), "байт", flush=True)
-              if len(данные) < 1000:
-                  print(f"::error title=скачивание::{имя} пустой"); sys.exit(1)
+              if len(данные) < минимум:
+                  print(f"::error title=скачивание::{имя} — {len(данные)} байт, ждали ≥{минимум}"); sys.exit(1)
           if os.path.getsize("model_int8.onnx") < 500_000_000:
               print("::error title=модель::model_int8.onnx меньше 500 МБ"); sys.exit(1)
           # sentencepiece-модель для фолбэка токенизатора
