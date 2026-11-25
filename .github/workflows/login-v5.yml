@@ -1,0 +1,166 @@
+name: login-v5
+on:
+  workflow_dispatch:
+jobs:
+  login:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb
+          pip install -q playwright pyotp
+          python -m playwright install --with-deps chromium firefox
+      - name: Попытки входа
+        env:
+          GOOGLE_EMAIL: ${{ secrets.GOOGLE_EMAIL }}
+          GOOGLE_PASS: ${{ secrets.GOOGLE_PASS }}
+          TOTP_SECRET: ${{ secrets.TOTP_SECRET }}
+        run: |
+          mkdir -p /tmp/shots
+          exec > >(tee /tmp/login.txt) 2>&1
+          xvfb-run -a --server-args="-screen 0 1400x950x24" python3 - <<'PY'
+          import os, time, json, shutil, pyotp
+          from playwright.sync_api import sync_playwright
+
+          def turnstile(pg, tag=''):
+              for i in range(6):
+                  try:
+                      for f in pg.frames:
+                          if 'challenges.cloudflare.com' in (f.url or ''):
+                              f.locator('body').first.click(timeout=5000, force=True)
+                              pg.wait_for_timeout(4000); break
+                  except Exception: pass
+                  try: t = pg.inner_text('body')
+                  except Exception:
+                      pg.wait_for_timeout(2000); continue
+                  if 'Security Verification' not in t and 'Verify you are human' not in t and 'Подтвердите' not in t:
+                      print(f'  [{tag}] turnstile ok ({i})'); return True
+                  pg.wait_for_timeout(3000)
+              print(f'  [{tag}] turnstile FAIL'); return False
+
+          def field(page, sels, val, tag):
+              for r in range(15):
+                  for f in page.frames:
+                      for s in sels:
+                          try:
+                              l = f.locator(s).first
+                              if l.count() and l.is_visible():
+                                  l.click(timeout=4000); l.fill('', timeout=4000)
+                                  page.keyboard.type(val, delay=60)
+                                  print(f'  [{tag}] ok {s}'); return True
+                          except Exception: pass
+                  page.wait_for_timeout(1500)
+              print(f'  [{tag}] НЕТ ПОЛЯ; фреймы:', [f.url[:50] for f in page.frames]); return False
+
+          def press(page, sels, tag):
+              for s in sels:
+                  for f in page.frames:
+                      try:
+                          l = f.locator(s).first
+                          if l.count() and l.is_visible():
+                              l.click(timeout=5000); print(f'  [{tag}] click {s}'); return True
+                      except Exception: pass
+              try: page.keyboard.press('Enter'); print(f'  [{tag}] Enter'); return True
+              except Exception: return False
+
+          def попытка(p, движок, выходной):
+              print(f'\n===== {движок} =====')
+              профиль = f'/tmp/профиль-{движок}'
+              shutil.rmtree(профиль, ignore_errors=True)
+              try:
+                  if движок == 'firefox':
+                      b = p.firefox.launch_persistent_context(профиль, headless=False,
+                              viewport={'width':1400,'height':950}, locale='en-US')
+                  elif движок == 'chrome':
+                      b = p.chromium.launch_persistent_context(профиль, channel='chrome', headless=False,
+                              args=['--no-sandbox','--disable-dev-shm-usage','--disable-blink-features=AutomationControlled'],
+                              viewport={'width':1400,'height':950}, locale='en-US')
+                  else:
+                      b = p.chromium.launch_persistent_context(профиль, headless=False,
+                              args=['--no-sandbox','--disable-dev-shm-usage','--disable-blink-features=AutomationControlled'],
+                              viewport={'width':1400,'height':950}, locale='en-US')
+              except Exception as e:
+                  print('движок не поднялся:', repr(e)[:300]); return None
+              ctx = b
+              ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined}); window.chrome={runtime:{}};")
+              pg = ctx.pages[0] if ctx.pages else ctx.new_page()
+              try:
+                  pg.goto('https://arena.ai/text', timeout=120000)
+                  pg.wait_for_timeout(7000)
+                  turnstile(pg, движок)
+                  pg.locator('button:has-text("Log In")').first.click(timeout=10000)
+                  pg.wait_for_timeout(4000)
+                  page = pg
+                  try:
+                      with ctx.expect_page(timeout=20000) as inf:
+                          pg.locator('button:has-text("Continue with Google"), text=Continue with Google').last.click(timeout=15000)
+                      page = inf.value
+                      print('google: новая вкладка')
+                  except Exception as e:
+                      print('google: той же вкладкой', repr(e)[:120])
+                  page.wait_for_timeout(7000)
+                  page.screenshot(path=f'/tmp/shots/{движок}-01-google.png')
+                  print('url:', page.url[:100])
+                  print('текст:', page.inner_text('body')[:250].replace('\n',' | '))
+                  if not field(page, ['input[name="identifier"]','input#identifierId','input[type="email"]','input[autocomplete="username"]'], os.environ['GOOGLE_EMAIL'], 'email'):
+                      page.screenshot(path=f'/tmp/shots/{движок}-02-нет-email.png'); b.close(); return None
+                  press(page, ['#identifierNext','button:has-text("Next")'], 'email-next')
+                  page.wait_for_timeout(9000)
+                  page.screenshot(path=f'/tmp/shots/{движок}-03-после-email.png')
+                  t = page.inner_text('body')
+                  print('после email:', page.url[:100], '|', t[:200].replace('\n',' | '))
+                  if 'not be secure' in t or 'rejected' in page.url:
+                      print('!!! GOOGLE ОТБИЛ:', движок); b.close(); return None
+                  field(page, ['input[name="Passwd"]','input[type="password"]'], os.environ['GOOGLE_PASS'], 'pass')
+                  press(page, ['#passwordNext','button:has-text("Next")'], 'pass-next')
+                  page.wait_for_timeout(12000)
+                  page.screenshot(path=f'/tmp/shots/{движок}-04-после-пароля.png')
+                  print('после пароля:', page.url[:100], '|', page.inner_text('body')[:200].replace('\n',' | '))
+                  if page.locator('input[type="tel"], input[name="totpPin"]').count():
+                      field(page, ['input[name="totpPin"]','input[type="tel"]','input[autocomplete="one-time-code"]'], pyotp.TOTP(os.environ['TOTP_SECRET']).now(), 'totp')
+                      press(page, ['#totpNext','button:has-text("Next")'], 'totp-next')
+                      page.wait_for_timeout(12000)
+                      page.screenshot(path=f'/tmp/shots/{движок}-05-после-totp.png')
+                  page.wait_for_timeout(6000)
+                  try:
+                      if page is not pg and not page.is_closed(): page.close()
+                  except Exception: pass
+                  pg.goto('https://arena.ai/text', timeout=120000)
+                  pg.wait_for_timeout(9000)
+                  turnstile(pg, 'финал')
+                  pg.screenshot(path=f'/tmp/shots/{движок}-06-финал.png')
+                  t2 = pg.inner_text('body')
+                  вошёл = ('Sign up for free' not in t2) and ('Log In' not in t2)
+                  print('ВОШЁЛ:', вошёл, '| текст:', t2[:150].replace('\n',' | '))
+                  print('куки:', [c['name'] for c in ctx.cookies()][:22])
+                  if вошёл:
+                      ctx.storage_state(path=выходной)
+                      print('STATE СОХРАНЁН:', os.path.getsize(выходной), 'Б')
+                  b.close()
+                  return вошёл
+              except Exception as e:
+                  print('ПАДЕНИЕ', движок, repr(e)[:300])
+                  try: pg.screenshot(path=f'/tmp/shots/{движок}-99-падение.png')
+                  except Exception: pass
+                  try: b.close()
+                  except Exception: pass
+                  return None
+
+          with sync_playwright() as p:
+              for дв, вых in (('chrome','state-chrome.json'), ('firefox','state-firefox.json'), ('chromium','state.json')):
+                  ок = попытка(p, дв, вых)
+                  print('ИТОГ', дв, '=', ок)
+                  if ок: break
+          PY
+          ls -la /tmp/shots/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: login
+          path: |
+            /tmp/login.txt
+            /tmp/shots/
+            state*.json
