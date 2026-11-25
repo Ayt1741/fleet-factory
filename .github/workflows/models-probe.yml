@@ -1,0 +1,43 @@
+name: models-probe
+# Проверка: доступен ли GitHub Models ИЗ РАННЕРА (в песочнице он заглушён прокси).
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      models: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Проба GitHub Models
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request, urllib.error
+          ток = os.environ["GITHUB_TOKEN"]
+          def проба(имя, url, hdr, тело=None):
+              req = urllib.request.Request(url, data=json.dumps(тело).encode() if тело else None,
+                  headers={"User-Agent":"arena", "Content-Type":"application/json", **hdr})
+              try:
+                  r = urllib.request.urlopen(req, timeout=90)
+                  b = r.read()
+                  print(f"{имя}: {r.status} | {len(b)} байт | {b[:160]}", flush=True)
+                  return b
+              except urllib.error.HTTPError as e:
+                  print(f"{имя}: HTTP {e.code} | {e.read()[:200]}", flush=True)
+              except Exception as e:
+                  print(f"{имя}: {repr(e)[:160]}", flush=True)
+          проба("каталог models.github.ai", "https://models.github.ai/catalog/models",
+                {"Authorization": f"Bearer {ток}"})
+          проба("inference gpt-4o-mini", "https://models.github.ai/inference/chat/completions",
+                {"Authorization": f"Bearer {ток}", "Accept": "application/vnd.github+json"},
+                {"model": "openai/gpt-4o-mini",
+                 "messages": [{"role":"user","content":"Ответь одним словом: работает"}],
+                 "max_tokens": 10})
+          PY
