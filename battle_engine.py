@@ -1,213 +1,302 @@
 #!/usr/bin/env python3
-"""Флот боёв: отправка БЕЗ ОЖИДАНИЯ, сбор ответов отдельным проходом.
+"""Гостевой (без логина) движок боёв Arena.
 
-Главное отличие от прежнего воркера: бой не блокирует очередь.
-Отправка 100 боёв идёт «очередью» (≈12–15 с на бой), ответы собираются позже по адресам чатов.
-Можно запускать на многих машинах одновременно (GitHub Actions, несколько браузеров на каждой).
+Прошлый движок ждал `textarea` — на arena.ai его нет (скрытый g-recaptcha-response),
+композер — это div[contenteditable=true] (tiptap/ProseMirror), а после первой отправки
+всплывает модалка Terms of Use с кнопкой Agree. Turnstile проходит кликом по iframe
+challenges.cloudflare.com.
 
-Команды:
-  submit  --pdf F --prompt P --count N --workers K --out sessions.jsonl
-  harvest --in sessions.jsonl --out answers.jsonl [--wait 300] [--workers K]
-  check                       проверить, что вход в Arena жив
-
-Состояние входа: файл из переменной ARENA_STATE (по умолчанию state_arena.json).
+  submit  --prompt P --count N [--file F]
+  harvest --in sessions.jsonl --wait 600
+  check
 """
 import argparse
 import json
 import os
 import re
 import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 from playwright.sync_api import sync_playwright
 
-UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
-      'Chrome/126.0.0.0 Safari/537.36')
-STATE = os.environ.get('ARENA_STATE', '/home/user/state_arena.json')
-lock = threading.Lock()
+STATE = os.environ.get('ARENA_STATE', 'state.json')
+UA = ('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) '
+      'Chrome/131.0.0.0 Safari/537.36')
+ARGS = ['--no-sandbox', '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled']
+MASK = ("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+        "window.chrome={runtime:{}};")
 
 
-def now():
-    return time.strftime('%H:%M:%S', time.gmtime())
+def log(*a):
+    print(time.strftime('%H:%M:%S', time.gmtime()), *a, flush=True)
 
 
 def new_ctx(browser):
-    kw = dict(locale='ru-RU', user_agent=UA, viewport={'width': 1400, 'height': 950})
+    kw = dict(locale='en-US', user_agent=UA, viewport={'width': 1400, 'height': 950})
     if os.path.exists(STATE):
-        kw['storage_state'] = STATE
-    return browser.new_context(**kw)
-
-
-def submit_one(ctx, pdf, prompt, idx, tag):
-    """Один бой: прикрепить файл, ввести задание, нажать отправку, вернуть адрес. НЕ ЖДЁТ ОТВЕТА."""
-    rec = {'t': now(), 'idx': idx, 'tag': tag}
-    t0 = time.time()
-    pg = ctx.new_page()
-    try:
-        pg.goto('https://arena.ai/text', timeout=90000)
-        # ждём, пока интерфейс действительно отрисуется (Cloudflare + гидрация Next.js)
-        pg.wait_for_selector('textarea', state='visible', timeout=60000)
-        pg.wait_for_timeout(1500)
-        if pdf:
-            pg.wait_for_selector('input[type=file]', state='attached', timeout=60000)
-            pg.set_input_files('input[type=file]', pdf, timeout=60000)
-            rec['attach'] = 'sent'
-            pg.wait_for_timeout(5000)          # дать загрузиться и показаться имени файла
-        box = pg.locator('textarea').first
-        box.click(timeout=20000)
-        box.fill(prompt)
-        pg.wait_for_timeout(900)
-        pg.locator('button[aria-label*="Send"]').first.click(timeout=20000)
-        rec['sent'] = True
-        # адрес боя появляется только после того, как обе модели догенерируют ответ
         try:
-            pg.wait_for_url(re.compile(r'/c/[0-9a-f-]{8,}'), timeout=120000)
+            kw['storage_state'] = STATE
+        except Exception:
+            pass
+    ctx = browser.new_context(**kw)
+    ctx.add_init_script(MASK)
+    return ctx
+
+
+def turnstile(pg, tag='', tries=6):
+    for i in range(tries):
+        try:
+            for f in pg.frames:
+                if 'challenges.cloudflare.com' in (f.url or ''):
+                    f.locator('body').first.click(timeout=5000, force=True)
+                    pg.wait_for_timeout(4000)
+                    break
+        except Exception:
+            pass
+        try:
+            t = pg.inner_text('body')
+        except Exception:
+            pg.wait_for_timeout(2000)
+            continue
+        if ('Security Verification' not in t and 'Verify you are human' not in t
+                and 'Подтвердите' not in t):
+            return True
+        pg.wait_for_timeout(3000)
+    log(f'  [{tag}] Turnstile не пройден')
+    return False
+
+
+def agree(pg):
+    """Модалка Terms of Use: кнопка Agree / Enter."""
+    for _ in range(3):
+        try:
+            if 'Terms of Use & Privacy Policy' in pg.inner_text('body'):
+                b = pg.locator('button:has-text("Agree")').first
+                if b.count():
+                    b.click(timeout=5000)
+                    pg.wait_for_timeout(2000)
+                    return True
+                pg.keyboard.press('Enter')
+                pg.wait_for_timeout(2000)
+                return True
         except Exception:
             pass
         pg.wait_for_timeout(1500)
+    return False
+
+
+def composer(pg):
+    for sel in ('div[contenteditable="true"].tiptap',
+                'div[contenteditable="true"]',
+                '[role="textbox"][contenteditable="true"]'):
+        loc = pg.locator(sel)
+        if loc.count():
+            try:
+                if loc.first.is_visible():
+                    return loc.first, sel
+            except Exception:
+                pass
+    return None, None
+
+
+def submit_one(browser, prompt, idx, tag, file=None):
+    rec = {'idx': idx, 'tag': tag, 't': time.strftime('%H:%M:%S', time.gmtime())}
+    t0 = time.time()
+    ctx = new_ctx(browser)
+    pg = ctx.new_page()
+    try:
+        pg.goto('https://arena.ai/text', timeout=120000)
+        pg.wait_for_timeout(6000)
+        turnstile(pg, tag)
+        agree(pg)
+        box, sel = composer(pg)
+        if not box:
+            rec['error'] = 'нет композера'
+            return rec
+        box.click(timeout=10000)
+        pg.wait_for_timeout(400)
+        if file:
+            try:
+                pg.set_input_files('input[type=file]', file, timeout=60000)
+                rec['attach'] = 'sent'
+                pg.wait_for_timeout(6000)
+            except Exception as e:
+                rec['attach'] = 'fail: ' + repr(e)[:100]
+        pg.keyboard.type(prompt, delay=2)
+        pg.wait_for_timeout(800)
+        # отправка: Enter
+        pg.keyboard.press('Enter')
+        pg.wait_for_timeout(2500)
+        rec['terms'] = agree(pg)
+        # если Enter не отправил — поискать кнопку отправки
+        try:
+            body = pg.inner_text('body')
+            if prompt[:40] in body and 'Thinking' not in body and 'is better' not in body:
+                for sel2 in ('button[aria-label*="Send"]', 'button[type="submit"]',
+                             'button:has(svg[class*="send"])'):
+                    b = pg.locator(sel2)
+                    if b.count():
+                        b.first.click(timeout=8000)
+                        rec['via'] = sel2
+                        agree(pg)
+                        break
+        except Exception:
+            pass
+        rec['sent'] = True
+        try:
+            pg.wait_for_url(re.compile(r'/c/[0-9a-f-]{8,}'), timeout=90000)
+        except Exception:
+            pass
         rec['url'] = pg.url
         rec['url_ok'] = bool(re.search(r'/c/[0-9a-f-]{8,}', pg.url))
+        # сколько текста уже есть
+        try:
+            rec['chars'] = len(pg.inner_text('body'))
+        except Exception:
+            rec['chars'] = 0
+        try:
+            pg.screenshot(path=f'/tmp/shots/отпр-{idx}.png')
+        except Exception:
+            pass
     except Exception as e:
         rec['sent'] = False
-        rec['error'] = str(e)[:180]
+        rec['error'] = repr(e)[:300]
     finally:
         rec['sec'] = round(time.time() - t0, 1)
-        pg.close()
+        try:
+            pg.close(); ctx.close()
+        except Exception:
+            pass
     return rec
 
 
-def harvest_one(ctx, rec, wait_s):
-    """Сбор ответа по адресу чата: опрос до появления «A/B is better» или отказа."""
+def harvest_one(browser, rec, wait_s):
     out = dict(rec)
+    if not rec.get('url_ok'):
+        out['status'] = 'no_url'
+        return out
+    ctx = new_ctx(browser)
     pg = ctx.new_page()
     t0 = time.time()
     try:
-        pg.goto(rec['url'], timeout=60000)
-        pg.wait_for_timeout(5000)
+        pg.goto(rec['url'], timeout=90000)
+        pg.wait_for_timeout(6000)
+        turnstile(pg, 'harvest')
+        agree(pg)
         status = 'timeout'
         while time.time() - t0 < wait_s:
-            body = pg.inner_text('body')
-            if re.search(r'(A|B) is better', body):
+            try:
+                body = pg.inner_text('body')
+            except Exception:
+                pg.wait_for_timeout(5000)
+                continue
+            if 'is better' in body or 'Which response' in body or 'Vote' in body:
                 status = 'answer'
                 out['answer'] = body
                 break
             if 'Something went wrong' in body:
                 status = 'refused'
+                out['answer'] = body
                 break
-            pg.wait_for_timeout(6000)
+            pg.wait_for_timeout(7000)
         out['status'] = status
-        out['sec'] = round(time.time() - t0, 1)
+        if 'answer' not in out:
+            try:
+                out['answer'] = pg.inner_text('body')
+            except Exception:
+                pass
+        try:
+            pg.screenshot(path=f"/tmp/shots/урожай-{rec.get('idx')}.png")
+        except Exception:
+            pass
     except Exception as e:
         out['status'] = 'error'
-        out['error'] = str(e)[:180]
+        out['error'] = repr(e)[:250]
     finally:
-        pg.close()
+        out['sec'] = round(time.time() - t0, 1)
+        try:
+            pg.close(); ctx.close()
+        except Exception:
+            pass
     return out
 
 
 def cmd_submit(a):
-    prompt = open(a.prompt, encoding='utf-8').read().strip()
-    results = []
-
-    def worker(k):
-        # свой браузер на поток: sync_playwright нельзя переиспользовать между потоками
-        with sync_playwright() as p:
-            b = p.chromium.launch(headless=not a.headed, args=['--no-sandbox', '--disable-dev-shm-usage',
-                                                               '--disable-blink-features=AutomationControlled'])
-            ctx = new_ctx(b)
-            local = []
-            for i in range(k, a.count, a.workers):
-                r = submit_one(ctx, a.pdf, prompt, i + 1, a.tag)
-                local.append(r)
-                with lock:
-                    print(json.dumps({'idx': r['idx'], 'sent': r['sent'], 'sec': r['sec'],
-                                      'err': r.get('error', '')[:60]}, ensure_ascii=False), flush=True)
-            ctx.close()
-            b.close()
-            return local
-
-    t0 = time.time()
-    with ThreadPoolExecutor(max_workers=a.workers) as ex:
-        for part in ex.map(worker, range(a.workers)):
-            results.extend(part)
-    wall = time.time() - t0
-    results.sort(key=lambda r: r['idx'])
-    with open(a.out, 'w', encoding='utf-8') as fh:
-        for r in results:
-            fh.write(json.dumps(r, ensure_ascii=False) + '\n')
-    sent = sum(1 for r in results if r.get('sent'))
-    print(f'отправлено {sent} из {a.count} за {wall:.0f} с (стенное время, {a.workers} браузера)', flush=True)
-    return 0 if sent else 3
+    prompt = open(a.prompt, encoding='utf-8').read() if os.path.exists(a.prompt) else a.prompt
+    res = []
+    with sync_playwright() as p:
+        b = p.chromium.launch(headless=not a.headed, args=ARGS)
+        for i in range(a.count):
+            r = submit_one(b, prompt, i + 1, a.tag, a.file)
+            log('submit', json.dumps({k: r.get(k) for k in ('idx', 'sent', 'url_ok', 'sec', 'error', 'attach')}, ensure_ascii=False))
+            res.append(r)
+            time.sleep(a.pause)
+        b.close()
+    with open(a.out, 'a', encoding='utf-8') as f:
+        for r in res:
+            f.write(json.dumps(r, ensure_ascii=False) + '\n')
+    log('итог submit:', sum(1 for r in res if r.get('url_ok')), '/', len(res), 'сбоев', sum(1 for r in res if not r.get('sent')))
 
 
 def cmd_harvest(a):
-    recs = [json.loads(l) for l in open(a.inp, encoding='utf-8') if l.strip().startswith('{')]
-    recs = [r for r in recs if r.get('url')]
+    recs = [json.loads(l) for l in open(a.inp, encoding='utf-8') if l.strip()]
+    recs = [r for r in recs if r.get('url_ok')]
+    log('урожай по', len(recs), 'боям')
     out = []
-
-    def worker(k):
-        with sync_playwright() as p:
-            b = p.chromium.launch(headless=not a.headed, args=['--no-sandbox', '--disable-dev-shm-usage',
-                                                               '--disable-blink-features=AutomationControlled'])
-            ctx = new_ctx(b)
-            local = []
-            for i in range(k, len(recs), a.workers):
-                r = harvest_one(ctx, recs[i], a.wait)
-                local.append(r)
-                with lock:
-                    print(json.dumps({'idx': r['idx'], 'status': r.get('status'), 'sec': r['sec']}), flush=True)
-            ctx.close()
-            b.close()
-            return local
-
-    t0 = time.time()
-    with ThreadPoolExecutor(max_workers=a.workers) as ex:
-        for part in ex.map(worker, range(a.workers)):
-            out.extend(part)
-    out.sort(key=lambda r: r['idx'])
-    with open(a.out, 'w', encoding='utf-8') as fh:
+    with sync_playwright() as p:
+        b = p.chromium.launch(headless=not a.headed, args=ARGS)
+        def w(r):
+            return harvest_one(b, r, a.wait)
+        with ThreadPoolExecutor(max_workers=a.workers) as ex:
+            for r in ex.map(w, recs):
+                log('harvest', r.get('idx'), r.get('status'), r.get('sec'))
+                out.append(r)
+        b.close()
+    with open(a.out, 'w', encoding='utf-8') as f:
         for r in out:
-            fh.write(json.dumps(r, ensure_ascii=False) + '\n')
-    ans = sum(1 for r in out if r.get('status') == 'answer')
-    ref = sum(1 for r in out if r.get('status') == 'refused')
-    print(f'собрано за {time.time()-t0:.0f} с: ответов {ans}, отказов {ref}, прочее {len(out)-ans-ref} из {len(out)}', flush=True)
-    return 0
+            f.write(json.dumps(r, ensure_ascii=False) + '\n')
+    log('готово:', sum(1 for r in out if r.get('status') == 'answer'), 'ответов из', len(out))
 
 
 def cmd_check(a):
     with sync_playwright() as p:
-        b = p.chromium.launch(headless=True, args=['--no-sandbox'])
+        b = p.chromium.launch(headless=not a.headed, args=ARGS)
         ctx = new_ctx(b)
         pg = ctx.new_page()
-        pg.goto('https://arena.ai/text', timeout=60000)
+        pg.goto('https://arena.ai/text', timeout=120000)
         pg.wait_for_timeout(6000)
+        turnstile(pg, 'check')
+        agree(pg)
         t = pg.inner_text('body')
-        logged = 'Get started' not in t
-        print('вход в Arena жив:', logged)
+        box, sel = composer(pg)
+        print('композер:', sel)
+        print('гость:', box is not None)
+        print('куки:', [c['name'] for c in ctx.cookies()])
+        print(t[:300].replace('\n', ' | '))
         b.close()
-        return 0 if logged else 3
 
 
 def main():
     ap = argparse.ArgumentParser()
-    sub = ap.add_subparsers(dest='cmd')
-    p = sub.add_parser('submit')
-    p.add_argument('--pdf', default='')
-    p.add_argument('--prompt', required=True)
-    p.add_argument('--count', type=int, default=30)
-    p.add_argument('--workers', type=int, default=2)
-    p.add_argument('--tag', default='F')
-    p.add_argument('--out', default='sessions.jsonl')
-    p.add_argument('--headed', action='store_true')
-    q = sub.add_parser('harvest')
-    q.add_argument('--in', dest='inp', required=True)
-    q.add_argument('--out', default='answers.jsonl')
-    q.add_argument('--wait', type=int, default=300)
-    q.add_argument('--workers', type=int, default=2)
-    q.add_argument('--headed', action='store_true')
-    sub.add_parser('check')
+    sp = ap.add_subparsers(dest='cmd')
+    s = sp.add_parser('submit')
+    s.add_argument('--prompt', required=True)
+    s.add_argument('--file')
+    s.add_argument('--count', type=int, default=1)
+    s.add_argument('--pause', type=int, default=10)
+    s.add_argument('--tag', default='guest')
+    s.add_argument('--out', default='sessions.jsonl')
+    s.add_argument('--headed', action='store_true')
+    h = sp.add_parser('harvest')
+    h.add_argument('--in', dest='inp', default='sessions.jsonl')
+    h.add_argument('--out', default='answers.jsonl')
+    h.add_argument('--wait', type=int, default=600)
+    h.add_argument('--workers', type=int, default=2)
+    h.add_argument('--headed', action='store_true')
+    c = sp.add_parser('check')
+    c.add_argument('--headed', action='store_true')
     a = ap.parse_args()
     if a.cmd == 'submit':
         return cmd_submit(a)
@@ -216,8 +305,7 @@ def main():
     if a.cmd == 'check':
         return cmd_check(a)
     ap.print_help()
-    return 0
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    main()
