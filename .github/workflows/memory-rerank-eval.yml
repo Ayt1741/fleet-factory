@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       vectors:
-        description: "vectors=e5 | bge512 — пересчитать векторы (torch, длина 512)"
+        description: "vectors=skip (готовые) | bge1024 — пересчёт торчем"
         required: false
         default: "skip"
 
@@ -20,7 +20,7 @@ env:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -114,6 +114,56 @@ jobs:
               print("залито:", путь, flush=True); urllib.request.urlopen(req2, timeout=600).read()
           for ф in ("данные/вект-записи.npy", "данные/вект-записи_ном.npy"):
               put("движок/результат-bge512/" + os.path.basename(ф), open(ф, "rb").read())
+          PY
+        env:
+          PAT: ${{ secrets.HRANILISHE_PAT }}
+
+
+      - name: "Пересчёт векторов bge-m3 torch, 1024 токена (если vectors=bge1024)"
+        if: github.event.inputs.vectors == 'bge1024'
+        run: |
+          cd движок
+          exec > >(tee /tmp/bge1024.log) 2>&1
+          python - <<'PY'
+          import importlib.util, os, sys, json, base64, urllib.request, urllib.parse, traceback
+          spec = importlib.util.spec_from_file_location("eng", "engine.py")
+          E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+          try:
+              E.скачать_журнал(); E.перестроить()
+              import numpy as np, time, sqlite3
+              from sentence_transformers import SentenceTransformer
+              con = sqlite3.connect(E.ИНДЕКС)
+              стр = list(con.execute("SELECT н, substr(текст,1,2400) FROM записи ORDER BY н"))
+              con.close()
+              # 1024 токена покрывают 100% записей журнала (самая длинная 702 токена)
+              м = SentenceTransformer("BAAI/bge-m3", device="cpu"); м.max_seq_length = 1024
+              Е, t0 = [], time.time()
+              for i in range(0, len(стр), 8):
+                  Е.append(м.encode([с or "" for _, с in стр[i:i+8]], batch_size=8,
+                                    normalize_embeddings=True, convert_to_numpy=True).astype(np.float32))
+                  if (i//8) % 20 == 0: print(f"  {min(i+8,len(стр))}/{len(стр)} {time.time()-t0:.0f} с", flush=True)
+              Ф = "данные/вект-записи.npy"
+              np.save(Ф, np.vstack(Е)); np.save(Ф.replace(".npy","_ном.npy"), np.array([н for н,_ in стр], dtype=np.int64))
+              print("готово:", len(стр), "векторов по 1024 токена", flush=True)
+          except Exception:
+              traceback.print_exc(); print("::error title=bge1024::" + repr(sys.exc_info()[1])[:250]); sys.exit(1)
+          пат = os.environ.get("PAT", "")
+          def put(путь, байты):
+              импорт = urllib.parse.quote(путь)
+              req = urllib.request.Request(f"https://api.github.com/repos/Ayt1741/hranilishe/contents/{импорт}",
+                  headers={"Authorization": f"Bearer {пат}", "User-Agent": "arena", "Accept": "application/vnd.github+json"})
+              ша = None
+              try: ша = json.loads(urllib.request.urlopen(req, timeout=60).read()).get("sha")
+              except Exception: pass
+              тело = {"message": "векторы bge-m3 1024 токена (100% записи)", "content": base64.b64encode(байты).decode()}
+              if ша: тело["sha"] = ша
+              req2 = urllib.request.Request(f"https://api.github.com/repos/Ayt1741/hranilishe/contents/{импорт}",
+                  method="PUT", data=json.dumps(тело).encode(),
+                  headers={"Authorization": f"Bearer {пат}", "User-Agent": "arena",
+                           "Accept": "application/vnd.github+json", "Content-Type": "application/json"})
+              print("залито:", путь, flush=True); urllib.request.urlopen(req2, timeout=600).read()
+          for ф in ("данные/вект-записи.npy", "данные/вект-записи_ном.npy"):
+              put("движок/результат-bge1024/" + os.path.basename(ф), open(ф, "rb").read())
           PY
         env:
           PAT: ${{ secrets.HRANILISHE_PAT }}
