@@ -1,0 +1,89 @@
+name: net-capture
+on:
+  workflow_dispatch:
+jobs:
+  cx:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+          pip install -q playwright
+          python -m playwright install --with-deps chromium
+      - name: Перехват
+        env:
+          GOOGLE_EMAIL: ${{ secrets.GOOGLE_EMAIL }}
+        run: |
+          mkdir -p /tmp/shots
+          exec > >(tee /tmp/net.txt) 2>&1
+          xvfb-run -a --server-args="-screen 0 1400x950x24" python3 - <<'PY'
+          import os, json
+          from playwright.sync_api import sync_playwright
+          E = os.environ['GOOGLE_EMAIL']
+          журнал = []
+          def turnstile(pg, tag=''):
+              for i in range(6):
+                  try:
+                      for f in pg.frames:
+                          if 'challenges.cloudflare.com' in (f.url or ''):
+                              f.locator('body').first.click(timeout=5000, force=True)
+                              pg.wait_for_timeout(4000); break
+                  except Exception: pass
+                  try: t = pg.inner_text('body')
+                  except Exception:
+                      pg.wait_for_timeout(2000); continue
+                  if 'Security Verification' not in t and 'Verify you are human' not in t:
+                      print(f'[{tag}] turnstile ok {i}'); return True
+                  pg.wait_for_timeout(3000)
+              return False
+          with sync_playwright() as p:
+              b = p.chromium.launch_persistent_context('/tmp/prof', headless=False,
+                      args=['--no-sandbox','--disable-dev-shm-usage','--disable-blink-features=AutomationControlled'],
+                      viewport={'width':1400,'height':950}, locale='en-US')
+              b.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+              pg = b.pages[0] if b.pages else b.new_page()
+              def on_req(r):
+                  u = r.url
+                  if any(k in u for k in ('auth.', 'supabase', '/auth/v1', 'otp', 'callback')):
+                      h = {}
+                      try: h = dict(r.headers)
+                      except Exception: pass
+                      журнал.append({'метод': r.method, 'url': u[:400],
+                                     'apikey': h.get('apikey'), 'auth': (h.get('authorization') or '')[:40],
+                                     'ct': h.get('content-type'), 'post': (r.post_data or '')[:300]})
+              def on_resp(r):
+                  u = r.url
+                  if any(k in u for k in ('auth.', '/auth/v1', 'otp')):
+                      try: т = r.text()[:400]
+                      except Exception: т = ''
+                      журнал.append({'ОТВЕТ': r.status, 'url': u[:300], 'тело': т})
+              pg.on('request', on_req); pg.on('response', on_resp)
+              pg.goto('https://arena.ai/text', timeout=120000); pg.wait_for_timeout(8000)
+              turnstile(pg, 'старт')
+              pg.locator('button:has-text("Log In")').first.click(timeout=15000); pg.wait_for_timeout(4000)
+              try:
+                  l = pg.locator('input[type="email"]').first
+                  l.click(timeout=5000); l.fill(E, timeout=8000)
+                  print('email вписан:', l.input_value())
+              except Exception as ex: print('поле:', repr(ex)[:150])
+              pg.screenshot(path='/tmp/shots/01-до-кнопки.png')
+              try:
+                  pg.locator('button:has-text("Continue with email")').first.click(timeout=10000)
+              except Exception as ex: print('кнопка:', repr(ex)[:150])
+              pg.wait_for_timeout(9000)
+              pg.screenshot(path='/tmp/shots/02-после-кнопки.png')
+              print('страниц:', len(b.pages), [x.url[:90] for x in b.pages])
+              print('=== ЖУРНАЛ СЕТИ ===')
+              for з in журнал:
+                  print(json.dumps(з, ensure_ascii=False)[:700])
+              b.close()
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: net
+          path: |
+            /tmp/net.txt
+            /tmp/shots/
