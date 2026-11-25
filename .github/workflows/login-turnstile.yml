@@ -4,7 +4,7 @@ on:
 jobs:
   login:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
@@ -20,7 +20,7 @@ jobs:
         run: |
           mkdir -p /tmp/shots
           xvfb-run -a --server-args="-screen 0 1400x950x24" python3 - <<'PY' > /tmp/login.txt 2>&1
-          import os, pyotp
+          import os, pyotp, traceback
           from playwright.sync_api import sync_playwright
 
           def пройти_turnstile(pg, метка=""):
@@ -29,100 +29,133 @@ jobs:
                       for ф in pg.frames:
                           if "challenges.cloudflare.com" in (ф.url or ""):
                               ф.locator("body").first.click(timeout=5000, force=True)
-                              pg.wait_for_timeout(6000)
+                              pg.wait_for_timeout(5000)
                               print(f"  [{метка}] клик по iframe Turnstile, попытка {попытка}")
                               break
                   except Exception as e:
-                      print(f"  [{метка}] err: {repr(e)[:100]}")
+                      print(f"  [{метка}] err: {repr(e)[:120]}")
                   t = pg.inner_text('body')
-                  if 'Подтвердите' not in t and 'Verify you are human' not in t.lower() and 'Security Verification' not in t:
+                  if 'Подтвердите' not in t and 'Security Verification' not in t and 'Verify you are human' not in t:
                       print(f"  [{метка}] Turnstile пройден на попытке {попытка}")
                       return True
                   pg.wait_for_timeout(4000)
               print(f"  [{метка}] Turnstile НЕ пройден")
               return False
 
+          def поле(page, селы, текст, метка):
+              for раунд in range(12):
+                  for ф in page.frames:
+                          for сел in селы:
+                              try:
+                                  loc = ф.locator(сел).first
+                                  if loc.count() > 0 and loc.is_visible():
+                                      loc.click(timeout=4000)
+                                      loc.fill("", timeout=4000)
+                                      page.keyboard.type(текст, delay=70)
+                                      print(f"  [{метка}] введено в {сел} (фрейм {ф.url[:50]})")
+                                      return True
+                              except Exception:
+                                  pass
+                  page.wait_for_timeout(1500)
+              print(f"  [{метка}] ПОЛЕ НЕ НАЙДЕНО, фреймы:", [f.url[:60] for f in page.frames])
+              return False
+
+          def нажать(page, селы, метка):
+              for сел in селы:
+                  for ф in page.frames:
+                      try:
+                          loc = ф.locator(сел).first
+                          if loc.count() > 0 and loc.is_visible():
+                              loc.click(timeout=5000)
+                              print(f"  [{метка}] нажато {сел}")
+                              return True
+                      except Exception:
+                          pass
+              try:
+                  page.keyboard.press("Enter"); print(f"  [{метка}] Enter")
+                  return True
+              except Exception:
+                  return False
+
           with sync_playwright() as p:
-              b = p.chromium.launch(headless=False, args=['--no-sandbox','--disable-dev-shm-usage','--disable-blink-features=AutomationControlled'])
-              ctx = b.new_context(viewport={'width':1400,'height':950}, locale='en-US')
-              ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
+              b = p.chromium.launch(headless=False, args=['--no-sandbox','--disable-dev-shm-usage','--disable-blink-features=AutomationControlled','--disable-features=IsolateOrigins,site-per-process'])
+              ctx = b.new_context(viewport={'width':1400,'height':950}, locale='en-US',
+                                  user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36')
+              ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined}); window.chrome={runtime:{}};")
               pg = ctx.new_page()
               pg.goto('https://arena.ai/text', timeout=120000)
-              pg.wait_for_timeout(8000)
-              ок = пройти_turnstile(pg, "старт")
-              pg.screenshot(path='/tmp/shots/01-после-turnstile.png')
-              t = pg.inner_text('body')
-              print("textarea после Turnstile:", pg.locator('textarea').count(), "| видимых:", pg.locator('textarea:visible').count())
-              print("Ask anything:", 'Ask anything' in t)
-              # гостевой тест
-              if pg.locator('textarea:visible').count():
-                  print("=== ГОСТЕВОЙ РЕЖИМ ДОСТУПЕН ===")
+              pg.wait_for_timeout(7000)
+              пройти_turnstile(pg, "старт")
+              pg.locator('button:has-text("Log In")').first.click(timeout=10000)
+              pg.wait_for_timeout(4000)
+              pg.screenshot(path='/tmp/shots/02-модалка.png')
+              print("модалка:", pg.inner_text('body')[:150].replace("\n"," | "))
+              page = pg
+              try:
+                  with ctx.expect_page(timeout=25000) as инфо:
+                      pg.locator('button:has-text("Continue with Google"), div:has-text("Continue with Google")').last.click(timeout=15000)
+                  page = инфо.value
+              except Exception as e:
+                  print("новая вкладка не открылась:", repr(e)[:200])
                   try:
-                      ta = pg.locator('textarea:visible').first
-                      ta.click(timeout=5000); ta.fill("ping")
-                      print("textarea заполнен ок")
-                  except Exception as e: print("textarea err:", repr(e)[:150])
-
-              if ок:
-                  # логин: кнопка Log In
-                  написал = False
-                  for сел in ('button:has-text("Log In")','a:has-text("Log In")','button:has-text("Log in")','text=Log In'):
-                      try:
-                          pg.locator(сел).first.click(timeout=8000); print("клик вход:", сел); написал=True; break
-                      except Exception: pass
-                  pg.wait_for_timeout(5000)
-                  pg.screenshot(path='/tmp/shots/03-меню.png')
-                  print("после клика:", pg.inner_text('body')[:300].replace("\n"," | "))
-                  # перечислить кнопки модалки
-                  try:
-                      кн = pg.locator('button:visible, a:visible').all_inner_texts()
-                      print("кнопки:", [k.strip()[:30] for k in кн if k.strip()][:25])
-                  except Exception: pass
-                  page = pg
-                  try:
-                      with ctx.expect_page(timeout=20000) as инфо:
-                          pg.locator("text=/Google/i").first.click(timeout=15000)
-                      page = инфо.value
-                      print("Google в новой вкладке")
-                  except Exception as e:
-                      print("Google новая вкладка нет:", repr(e)[:120])
-                      try:
-                          pg.locator("text=/Google/i").first.click(timeout=10000); print("Google клик в той же вкладке")
-                      except Exception as e2: print("Google совсем нет:", repr(e2)[:120])
-                  page.wait_for_timeout(6000)
-                  page.screenshot(path='/tmp/shots/04-google.png')
-                  print("url Google:", page.url, "|", page.title()[:80])
-                  try:
-                      page.fill('input[type=email]', os.environ['GOOGLE_EMAIL'], timeout=25000)
-                      page.keyboard.press('Enter'); page.wait_for_timeout(8000)
-                      page.screenshot(path='/tmp/shots/05-email.png'); print("email ок:", page.url[:80])
-                      page.fill('input[type=password]', os.environ['GOOGLE_PASS'], timeout=25000)
-                      page.keyboard.press('Enter'); page.wait_for_timeout(11000)
-                      page.screenshot(path='/tmp/shots/06-пароль.png'); print("пароль ок:", page.url[:80])
-                      if page.locator('input[type=tel]').count():
-                          код = pyotp.TOTP(os.environ['TOTP_SECRET']).now()
-                          print("TOTP:", код)
-                          page.locator('input[type=tel]').first.fill(код); page.keyboard.press('Enter')
-                          page.wait_for_timeout(12000)
-                          page.screenshot(path='/tmp/shots/07-totp.png')
-                      print("после google url:", page.url[:100])
-                  except Exception as e:
-                      print("ШАГ GOOGLE УПАЛ:", repr(e)[:300])
-                      try: page.screenshot(path='/tmp/shots/08-ошибка.png')
-                      except Exception: pass
-                  try:
-                      if page is not pg: page.close()
-                  except Exception: pass
+                      pg.locator('text=Continue with Google').first.click(timeout=10000)
+                      page = pg
+                  except Exception as e2:
+                      print("кнопка Google не найдена:", repr(e2)[:200])
+              page.wait_for_timeout(7000)
+              page.screenshot(path='/tmp/shots/03-google.png')
+              print("google url:", page.url[:120], "| title:", page.title()[:60])
+              print("фреймы:", [f.url[:70] for f in page.frames])
+              print("текст:", page.inner_text('body')[:300].replace("\n"," | "))
+              # EMAIL
+              if not поле(page, ['input[name="identifier"]','input#identifierId','input[type="email"]','input[autocomplete="username"]'], os.environ['GOOGLE_EMAIL'], "email"):
+                  page.screenshot(path='/tmp/shots/04-нет-поля-email.png')
+                  raise SystemExit("email поле не найдено")
+              page.wait_for_timeout(1000)
+              page.screenshot(path='/tmp/shots/05-email-введён.png')
+              нажать(page, ['#identifierNext','button:has-text("Next")','button:has-text("Далее")'], "email-next")
+              page.wait_for_timeout(9000)
+              page.screenshot(path='/tmp/shots/06-после-email.png')
+              print("после email url:", page.url[:120])
+              print("текст:", page.inner_text('body')[:400].replace("\n"," | "))
+              # PASSWORD
+              if not поле(page, ['input[name="Passwd"]','input[type="password"]','input[autocomplete="current-password"]'], os.environ['GOOGLE_PASS'], "пароль"):
+                  page.screenshot(path='/tmp/shots/07-нет-пароля.png')
+                  print("ПАРОЛЬ: поле не найдено")
+              else:
+                  page.wait_for_timeout(1000)
+                  page.screenshot(path='/tmp/shots/08-пароль-введён.png')
+                  нажать(page, ['#passwordNext','button:has-text("Next")','button:has-text("Далее")'], "pass-next")
+                  page.wait_for_timeout(12000)
+                  page.screenshot(path='/tmp/shots/09-после-пароля.png')
+                  print("после пароля url:", page.url[:120])
+                  print("текст:", page.inner_text('body')[:400].replace("\n"," | "))
+                  # TOTP
+                  if поле(page, ['input[name="totpPin"]','input#totpPin','input[type="tel"]','input[autocomplete="one-time-code"]'], pyotp.TOTP(os.environ['TOTP_SECRET']).now(), "totp"):
+                      нажать(page, ['#totpNext','button:has-text("Next")','button:has-text("Далее")'], "totp-next")
+                      page.wait_for_timeout(12000)
+                      page.screenshot(path='/tmp/shots/10-после-totp.png')
+                      print("после totp url:", page.url[:120])
+                  else:
+                      print("TOTP не запрошен")
+              # возврат в арену
+              page.wait_for_timeout(6000)
+              try:
+                  if page is not pg and not page.is_closed():
+                      page.close()
+              except Exception: pass
               pg.goto('https://arena.ai/text', timeout=120000)
               pg.wait_for_timeout(9000)
               пройти_turnstile(pg, "финал")
-              pg.screenshot(path='/tmp/shots/09-финал.png')
+              pg.screenshot(path='/tmp/shots/11-финал.png')
               t2 = pg.inner_text('body')
+              войти = ('Sign up for free' not in t2) and ('Log In' not in t2)
               print("=== ИТОГ ===")
-              print("ВОШЁЛ:", 'Get started' not in t2 and 'Sign up' not in t2 and 'Log In' not in t2)
+              print("ВОШЁЛ:", войти)
               print("Ask anything:", 'Ask anything' in t2)
               print("textarea видимых:", pg.locator('textarea:visible').count())
-              print("куки:", len(ctx.cookies()))
+              print("текст:", t2[:250].replace("\n"," | "))
+              print("куки:", len(ctx.cookies()), [c['name'] for c in ctx.cookies()][:25])
               ctx.storage_state(path='state.json')
               print("state.json:", os.path.getsize('state.json'), "Б")
               b.close()
