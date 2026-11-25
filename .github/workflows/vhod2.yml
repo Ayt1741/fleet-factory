@@ -1,0 +1,34 @@
+name: vhod2
+on:
+  workflow_dispatch:
+    inputs:
+      n: {description: 'akkaunt', default: '01'}
+      email: {description: 'pochta', default: 'a@b.ru'}
+      passw: {description: 'parol', default: 'x'}
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+          pip install -q playwright
+          python -m playwright install --with-deps chromium
+      - name: Vhod
+        env:
+          EMAIL: ${{ inputs.email }}
+          PASSW: ${{ inputs.passw }}
+          N: ${{ inputs.n }}
+        run: |
+          mkdir -p /tmp/shots
+          xvfb-run -a --server-args="-screen 0 1400x950x24" python3 vhod.py 2>&1 | tee /tmp/vhod.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vhod-art
+          path: |
+            /tmp/vhod.txt
+            /tmp/shots/
