@@ -1,0 +1,52 @@
+name: battle-guest
+on:
+  workflow_dispatch:
+    inputs:
+      count: {description: 'боёв', default: '2'}
+      workers: {description: 'воркеров урожая', default: '2'}
+      wait: {description: 'ждать ответ, с', default: '600'}
+      prompt_file: {description: 'промт', default: 'tasks/улучши-стенд.txt'}
+jobs:
+  battle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+          pip install -q playwright
+          python -m playwright install --with-deps chromium
+      - name: Бой
+        run: |
+          mkdir -p /tmp/shots
+          exec > >(tee /tmp/battle.log) 2>&1
+          echo "=== CHECK ==="
+          xvfb-run -a --server-args="-screen 0 1400x950x24" python3 battle_engine.py check --headed || true
+          echo "=== SUBMIT ==="
+          xvfb-run -a --server-args="-screen 0 1400x950x24" python3 battle_engine.py submit \
+            --prompt "${{ inputs.prompt_file }}" --count "${{ inputs.count }}" --pause 15 --out sessions.jsonl --headed || true
+          cat sessions.jsonl 2>/dev/null || true
+          echo "=== HARVEST ==="
+          xvfb-run -a --server-args="-screen 0 1400x950x24" python3 battle_engine.py harvest \
+            --in sessions.jsonl --wait "${{ inputs.wait }}" --workers "${{ inputs.workers }}" --headed || true
+          echo "=== ОТВЕТЫ ==="
+          python3 - <<'PY'
+          import json
+          for l in open('answers.jsonl', encoding='utf-8'):
+              r = json.loads(l)
+              print("="*70)
+              print("idx", r.get('idx'), "| статус", r.get('status'), "| url", r.get('url'))
+              a = r.get('answer','')
+              print(a[:4000])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: battle
+          path: |
+            /tmp/battle.log
+            sessions.jsonl
+            answers.jsonl
+            /tmp/shots/
