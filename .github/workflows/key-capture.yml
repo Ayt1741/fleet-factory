@@ -1,0 +1,52 @@
+name: key-capture
+on:
+  workflow_dispatch:
+jobs:
+  kc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+          pip install -q playwright
+          python -m playwright install --with-deps chromium
+      - name: Ключ Supabase
+        run: |
+          exec > >(tee /tmp/key.txt) 2>&1
+          xvfb-run -a --server-args="-screen 0 1400x950x24" python3 - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              b = p.chromium.launch(headless=True)
+              pg = b.new_page()
+              # 1) из localStorage/sessionStorage
+              pg.goto('https://arena.ai/text', timeout=120000); pg.wait_for_timeout(9000)
+              print('=== localStorage ===')
+              print(pg.evaluate("JSON.stringify(Object.fromEntries(Object.entries(localStorage)))" )[:3000])
+              print('=== sessionStorage ===')
+              print(pg.evaluate("JSON.stringify(Object.fromEntries(Object.entries(sessionStorage)))")[:2000])
+              # 2) из _next data / script-тегов
+              print('=== __NEXT_DATA__ / env ===')
+              print(pg.evaluate("JSON.stringify(window.__NEXT_DATA__||{})")[:1500])
+              # 3) все script src и поиск supabase-ключа в HTML
+              html = pg.content()
+              import re
+              for м in set(re.findall(r'(sb_[a-z]*_[A-Za-z0-9_\-]{20,}|eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{10,})', html)):
+                  print('HTML-ключ:', м[:80])
+              # 4) перехват запроса к auth при попытке логина
+              print('=== попытка логина: заголовки ===')
+              with pg.expect_request(lambda r: 'auth' in r.url and 'authorize' in r.url, timeout=30000) as ин:
+                  pg.locator('button:has-text("Log In")').first.click(timeout=15000)
+              req = ин.value
+              print('URL:', req.url[:200])
+              for k, v in req.headers.items():
+                  if k.lower() in ('apikey','authorization','referer','origin','x-client-info'):
+                      print(f'  {k}: {v}'[:160])
+              b.close()
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: key
+          path: /tmp/key.txt
