@@ -1,0 +1,112 @@
+name: dva-fronta
+on:
+  workflow_dispatch:
+jobs:
+  df:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+          pip install -q playwright
+          python -m playwright install --with-deps chromium
+      - name: lmarena + arena-close
+        run: |
+          mkdir -p /tmp/shots
+          exec > >(tee /tmp/f.txt) 2>&1
+          xvfb-run -a --server-args="-screen 0 1400x950x24" python3 - <<'PY'
+          import re, time
+          from playwright.sync_api import sync_playwright
+          def turnstile(pg, tag=''):
+              for i in range(8):
+                  try:
+                      for f in pg.frames:
+                          if 'challenges.cloudflare.com' in (f.url or ''):
+                              f.locator('body').first.click(timeout=5000, force=True); pg.wait_for_timeout(3500); break
+                  except Exception: pass
+                  try: t = pg.inner_text('body')
+                  except Exception:
+                      pg.wait_for_timeout(2000); continue
+                  if 'Security Verification' not in t and 'Verify you are human' not in t:
+                      print(f'  [{tag}] turnstile ok {i}', flush=True); return True
+                  pg.wait_for_timeout(2500)
+              print(f'  [{tag}] turnstile FAIL', flush=True); return False
+          def отправить(pg, текст, тег):
+              бокс = None
+              for с in ('div[contenteditable="true"].tiptap','div[contenteditable="true"]','textarea:visible','[role="textbox"]'):
+                  try:
+                      l = pg.locator(с).first
+                      if l.count() and l.is_visible(): бокс = l; print(f'  [{тег}] композер: {с}', flush=True); break
+                  except Exception: pass
+              if not бокс: print(f'  [{тег}] НЕТ КОМПОЗЕРА', flush=True); return False
+              бокс.click(timeout=15000)
+              pg.keyboard.insert_text(текст)
+              pg.wait_for_timeout(1500)
+              for с in ('button[aria-label="Send message"]','button[aria-label*="Send"]','button[type="submit"]'):
+                  try:
+                      b = pg.locator(с).first
+                      if b.count():
+                          b.click(timeout=8000); print(f'  [{тег}] Send: {с}', flush=True); return True
+                  except Exception as e: print(f'  [{тег}] {с}: {repr(e)[:60]}', flush=True)
+              pg.keyboard.press('Enter'); print(f'  [{тег}] Enter', flush=True); return True
+          with sync_playwright() as p:
+              b = p.chromium.launch_persistent_context('/tmp/prof', channel='chrome', headless=False,
+                      args=['--no-sandbox','--disable-dev-shm-usage','--disable-blink-features=AutomationControlled'],
+                      viewport={'width':1400,'height':950}, locale='en-US')
+              b.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined}); window.chrome={runtime:{}};")
+              pg = b.pages[0] if b.pages else b.new_page()
+              print('##### A. LMArena #####', flush=True)
+              try:
+                  pg.goto('https://lmarena.ai/', timeout=120000); pg.wait_for_timeout(9000)
+                  turnstile(pg, 'lmarena')
+                  pg.screenshot(path='/tmp/shots/A1-старт.png')
+                  print('  url:', pg.url, flush=True)
+                  print('  текст:', pg.inner_text('body')[:300].replace('\n',' | '), flush=True)
+                  ок = отправить(pg, 'Ответь одним словом: работает', 'lmarena')
+                  pg.wait_for_timeout(3000); turnstile(pg, 'lmarena2')
+                  pg.wait_for_timeout(12000)
+                  pg.screenshot(path='/tmp/shots/A2-после.png')
+                  t = pg.inner_text('body')
+                  print('  url после:', pg.url, flush=True)
+                  print('  текст после:', t[:600].replace('\n',' | '), flush=True)
+              except Exception as e:
+                  print('  A ПАДЕНИЕ:', repr(e)[:250], flush=True)
+              print('##### B. ARENA: закрыть модалку логина и отправить #####', flush=True)
+              try:
+                  pg.goto('https://arena.ai/text', timeout=120000); pg.wait_for_timeout(7000)
+                  turnstile(pg, 'arena')
+                  # принять terms если есть
+                  if 'Terms of Use & Privacy Policy' in pg.inner_text('body'):
+                      pg.locator('button:has-text("Agree")').first.click(timeout=6000); pg.wait_for_timeout(2000)
+                      print('  Agree', flush=True)
+                  ок = отправить(pg, 'Ответь одним словом: работает', 'arena')
+                  pg.wait_for_timeout(4000)
+                  if 'Terms of Use & Privacy Policy' in pg.inner_text('body'):
+                      pg.locator('button:has-text("Agree")').first.click(timeout=6000); print('  Agree2', flush=True); pg.wait_for_timeout(2500)
+                  # закрыть модалку логина
+                  for с in ('button:has-text("Close")','div[role="dialog"] button[aria-label*="lose"]','div[role="dialog"] button:has(svg)'):
+                      try:
+                          ls = pg.locator(с)
+                          if ls.count():
+                              ls.last.click(timeout=4000); print('  закрыл модалку:', с, flush=True); pg.wait_for_timeout(2500); break
+                      except Exception as e: print('   close err:', repr(e)[:70], flush=True)
+                  pg.wait_for_timeout(10000)
+                  pg.screenshot(path='/tmp/shots/B-после.png')
+                  t = pg.inner_text('body')
+                  print('  url:', pg.url, flush=True)
+                  print('  модалка логина?:', 'Log In or Create Account' in t, flush=True)
+                  print('  есть промт в чате?:', 'работает' in t, flush=True)
+                  print('  текст:', t[:500].replace('\n',' | '), flush=True)
+              except Exception as e:
+                  print('  B ПАДЕНИЕ:', repr(e)[:250], flush=True)
+              b.close()
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: f
+          path: |
+            /tmp/f.txt
+            /tmp/shots/
