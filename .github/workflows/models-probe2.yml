@@ -1,0 +1,55 @@
+name: models-probe2
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      models: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Проба правильных адресов
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - > /tmp/probe.txt 2>&1 <<'PY'
+          import json, os, socket, urllib.request, urllib.error
+          tok = os.environ["GITHUB_TOKEN"]
+          print("токен:", tok[:6] + "...", "длина", len(tok))
+          for хост in ("models.inference.ai.azure.com", "models.github.ai"):
+              try: print(f"{хост} DNS -> {socket.gethostbyname(хост)}")
+              except Exception as e: print(f"{хост} DNS -> {repr(e)[:80]}")
+          print("-" * 50)
+          def проба(имя, url, тело):
+              req = urllib.request.Request(url, data=json.dumps(тело).encode(),
+                  headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json",
+                           "Accept": "application/json", "User-Agent": "arena"})
+              try:
+                  r = urllib.request.urlopen(req, timeout=90)
+                  b = r.read()
+                  print(f"{имя}: {r.status} | {len(b)} байт")
+                  print("   ", b[:400].decode("utf-8","replace"))
+              except urllib.error.HTTPError as e:
+                  print(f"{имя}: HTTP {e.code} | {e.read()[:300].decode('utf-8','replace')}")
+              except Exception as e:
+                  print(f"{имя}: {repr(e)[:200]}")
+          for модель in ("gpt-4o-mini", "gpt-4.1-mini", "openai/gpt-4o-mini"):
+              проба(f"azure/{модель}", "https://models.inference.ai.azure.com/chat/completions",
+                    {"model": модель, "messages": [{"role":"user","content":"Ответь: работает"}], "max_tokens": 10})
+          print("-" * 50)
+          for url in ("https://models.github.ai/inference/chat/completions",
+                      "https://models.github.ai/v1/chat/completions"):
+              проба(url, url, {"model": "openai/gpt-4o-mini",
+                               "messages": [{"role":"user","content":"Ответь: работает"}], "max_tokens": 10})
+          PY
+          cat /tmp/probe.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe2
+          path: /tmp/probe.txt
