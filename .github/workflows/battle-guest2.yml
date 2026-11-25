@@ -1,0 +1,151 @@
+name: battle-guest2
+on:
+  workflow_dispatch:
+    inputs:
+      count: {description: 'боёв', default: '1'}
+      prompt_file: {description: 'файл промта', default: 'tasks/улучши-стенд.txt'}
+      wait: {description: 'ждать ответ, с', default: '900'}
+jobs:
+  bg:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+          pip install -q playwright
+          python -m playwright install --with-deps chromium
+      - name: Гостевой бой
+        run: |
+          mkdir -p /tmp/shots
+          exec > >(tee /tmp/g.txt) 2>&1
+          xvfb-run -a --server-args="-screen 0 1400x950x24" python3 - "${{ inputs.prompt_file }}" "${{ inputs.count }}" "${{ inputs.wait }}" <<'PY'
+          import sys, os, re, json, time
+          from playwright.sync_api import sync_playwright
+          ПРОМТ_ФАЙЛ, КОЛ, ЖДАТЬ = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+          промт = open(ПРОМТ_ФАЙЛ, encoding='utf-8').read()
+
+          def turnstile(pg, tag=''):
+              for i in range(8):
+                  try:
+                      for f in pg.frames:
+                          if 'challenges.cloudflare.com' in (f.url or ''):
+                              f.locator('body').first.click(timeout=5000, force=True); pg.wait_for_timeout(4000); break
+                  except Exception: pass
+                  try: t = pg.inner_text('body')
+                  except Exception:
+                      pg.wait_for_timeout(2000); continue
+                  if 'Security Verification' not in t and 'Verify you are human' not in t:
+                      print(f'[{tag}] turnstile ok {i}', flush=True); return True
+                  pg.wait_for_timeout(3000)
+              print(f'[{tag}] turnstile FAIL', flush=True); return False
+
+          def agree(pg):
+              for _ in range(4):
+                  try:
+                      t = pg.inner_text('body')
+                  except Exception:
+                      pg.wait_for_timeout(1500); continue
+                  if 'Terms of Use & Privacy Policy' in t:
+                      for с in ('button:has-text("Agree")','div[role="dialog"] button:has-text("Agree")'):
+                          try:
+                              b = pg.locator(с).first
+                              if b.count():
+                                  b.click(timeout=6000); print('  Agree нажат', flush=True); pg.wait_for_timeout(2500); return True
+                          except Exception: pass
+                      pg.keyboard.press('Enter'); pg.wait_for_timeout(2500); print('  Agree через Enter', flush=True); return True
+                  else:
+                      return False
+                  pg.wait_for_timeout(1500)
+              return False
+
+          итог = []
+          with sync_playwright() as p:
+              b = p.chromium.launch_persistent_context('/tmp/prof', channel='chrome', headless=False,
+                      args=['--no-sandbox','--disable-dev-shm-usage','--disable-blink-features=AutomationControlled'],
+                      viewport={'width':1400,'height':950}, locale='en-US')
+              b.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined}); window.chrome={runtime:{}};")
+              pg = b.pages[0] if b.pages else b.new_page()
+              for н in range(КОЛ):
+                  запись = {'бой': н+1, 'статус': 'старт'}
+                  print(f'\n===== БОЙ {н+1} =====', flush=True)
+                  try:
+                      pg.goto('https://arena.ai/text', timeout=120000); pg.wait_for_timeout(7000)
+                      turnstile(pg, f'бой{н+1}')
+                      agree(pg)
+                      # закрыть модалку логина если есть
+                      for с in ('button[aria-label="Close"]','button:has(svg.lucide-x)'):
+                          try:
+                              l = pg.locator(с).last
+                              if l.count() and l.is_visible(): l.click(timeout=3000); print('  закрыл модалку', flush=True); break
+                          except Exception: pass
+                      pg.keyboard.press('Escape'); pg.wait_for_timeout(2000)
+                      box = pg.locator('div[contenteditable="true"].tiptap').first
+                      box.click(timeout=15000)
+                      pg.keyboard.insert_text(промт)   # быстрая вставка целиком
+                      pg.wait_for_timeout(2000)
+                      print('  набрано знаков:', len(pg.inner_text('div[contenteditable="true"].tiptap')), flush=True)
+                      # отправка кнопкой
+                      послал = False
+                      for поп in range(3):
+                          try:
+                              pg.locator('button[aria-label="Send message"]').first.click(timeout=8000)
+                              послал = True; print('  Send нажат', flush=True); break
+                          except Exception as e:
+                              print('  Send err:', repr(e)[:100], flush=True); pg.wait_for_timeout(2000)
+                      if not послал: raise RuntimeError('Send не нажался')
+                      pg.wait_for_timeout(4000)
+                      agree(pg)
+                      pg.wait_for_timeout(3000)
+                      print('  URL:', pg.url, flush=True)
+                      запись['url'] = pg.url
+                      # ждём ответ
+                      t0 = time.time(); послед = ''
+                      while time.time() - t0 < ЖДАТЬ:
+                          try: t = pg.inner_text('body')
+                          except Exception:
+                              pg.wait_for_timeout(5000); continue
+                          if 'is better' in t or 'Which is better' in t:
+                              запись['статус'] = 'ответ'; break
+                          if 'Something went wrong' in t:
+                              запись['статус'] = 'отказ'; break
+                          if len(t) > len(послед) + 200:
+                              print(f'  ...{len(t)} знаков ({int(time.time()-t0)}с)', flush=True)
+                              послед = t
+                          pg.wait_for_timeout(10000)
+                      else:
+                          запись['статус'] = 'таймаут'
+                      try: t = pg.inner_text('body')
+                      except Exception: t = ''
+                      запись['текст'] = t
+                      запись['url'] = pg.url or запись.get('url')
+                      pg.screenshot(path=f'/tmp/shots/бой-{н+1}-финал.png', full_page=False)
+                      print('  ИТОГ:', запись['статус'], '| знаков:', len(t), '| url:', запись['url'], flush=True)
+                  except Exception as e:
+                      запись['статус'] = 'падение'; запись['ошибка'] = repr(e)[:300]
+                      print('  ПАДЕНИЕ:', repr(e)[:300], flush=True)
+                      try: pg.screenshot(path=f'/tmp/shots/бой-{н+1}-падение.png')
+                      except Exception: pass
+                  итог.append(запись)
+                  # новый чат для следующего боя
+                  try:
+                      pg.goto('https://arena.ai/text', timeout=90000); pg.wait_for_timeout(4000)
+                  except Exception: pass
+              b.close()
+          json.dump(итог, open('battle.json','w',encoding='utf-8'), ensure_ascii=False, indent=1)
+          print('\n===== СОДЕРЖИМОЕ ОТВЕТОВ =====')
+          for з in итог:
+              print('='*70)
+              print('бой', з['бой'], '|', з['статус'], '|', з.get('url'))
+              print((з.get('текст') or з.get('ошибка',''))[:6000])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: battle
+          path: |
+            /tmp/g.txt
+            battle.json
+            /tmp/shots/
