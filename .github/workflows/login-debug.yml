@@ -1,131 +1,34 @@
 name: login-debug
 on:
   workflow_dispatch:
+    inputs:
+      n: {description: 'akkaunt', default: '01'}
+      email: {description: 'pochta', default: 'a@b.ru'}
+      passw: {description: 'parol', default: 'x'}
 jobs:
-  d:
+  v:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
       - run: |
-          pip install playwright==1.47.0
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+          pip install -q playwright
           python -m playwright install --with-deps chromium
-      - name: Вход с полным логом и скриншотами
+      - name: Vhod
         env:
-          GOOGLE_EMAIL: ${{ secrets.GOOGLE_EMAIL }}
-          GOOGLE_PASS: ${{ secrets.GOOGLE_PASS }}
-          TOTP_SECRET: ${{ secrets.TOTP_SECRET }}
+          EMAIL: ${{ inputs.email }}
+          PASSW: ${{ inputs.passw }}
+          N: ${{ inputs.n }}
         run: |
           mkdir -p /tmp/shots
-          python - > /tmp/debug.txt 2>&1 <<'PY'
-          import base64, hashlib, hmac, os, re, struct, time
-          from playwright.sync_api import sync_playwright
-          def totp(secret):
-              s = re.sub(r'\s+', '', secret).upper().rstrip('=')
-              key = base64.b32decode(s + '=' * ((8 - len(s) % 8) % 8))
-              h = hmac.new(key, struct.pack('>Q', int(time.time() // 30)), hashlib.sha1).digest()
-              o = h[-1] & 0x0F
-              return str((struct.unpack('>I', h[o:o+4])[0] & 0x7FFFFFFF) % 1000000).zfill(6)
-          UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
-          print("email:", os.environ.get("GOOGLE_EMAIL","")[:6] + "...")
-          print("пароль задан:", bool(os.environ.get("GOOGLE_PASS")), "длина", len(os.environ.get("GOOGLE_PASS","")))
-          print("TOTP задан:", bool(os.environ.get("TOTP_SECRET")), "длина", len(os.environ.get("TOTP_SECRET","")))
-          print("текущий TOTP:", totp(os.environ["TOTP_SECRET"]) if os.environ.get("TOTP_SECRET") else "нет")
-          with sync_playwright() as p:
-              b = p.chromium.launch(headless=True, args=['--no-sandbox'])
-              ctx = b.new_context(locale='ru-RU', user_agent=UA, viewport={'width':1400,'height':950})
-              pg = ctx.new_page()
-              pg.goto('https://arena.ai/text', timeout=90000)
-              pg.wait_for_timeout(6000)
-              pg.screenshot(path='/tmp/shots/01-start.png')
-              print("\n--- старт ---")
-              print("url:", pg.url)
-              # ищем кнопку Log In
-              кнопки = pg.eval_on_selector_all('button,a,[role=button]',
-                  "els=>els.map(e=>({t:(e.innerText||'').trim().slice(0,25),h:e.getAttribute('href')||''}))")
-              вход = [к for к in кнопки if any(с in (к['t']+к['h']).lower() for с in ('log in','login','sign in','войти'))]
-              print("кнопки входа:", вход[:5])
-              try:
-                  pg.get_by_text('Log In', exact=True).first.click(timeout=10000)
-                  print("клик по Log In ок")
-              except Exception as e:
-                  print("клик не удался:", repr(e)[:150])
-              pg.wait_for_timeout(6000)
-              pg.screenshot(path='/tmp/shots/02-after-login-click.png')
-              print("после клика url:", pg.url)
-              body = pg.inner_text('body')[:400]
-              print("текст:", body.replace("\n"," | ")[:300])
-              # ищем Google
-              есть_г = 'google' in pg.content().lower()
-              print("есть Google на странице:", есть_г)
-              try:
-                  with ctx.expect_page(timeout=15000) as инфо:
-                      pg.locator("text=/google/i").first.click(timeout=10000)
-                  page = инфо.value
-                  print("открылась новая вкладка Google")
-              except Exception as e:
-                  print("новая вкладка не открылась:", repr(e)[:150])
-                  page = pg
-              page.wait_for_timeout(5000)
-              try: page.screenshot(path='/tmp/shots/03-google.png')
-              except Exception as e: print("скрин Google не вышел:", repr(e)[:80])
-              print("url google:", page.url)
-              print("заголовок:", page.title()[:80])
-              # поля
-              поля = page.eval_on_selector_all('input', "els=>els.map(e=>({type:e.type,name:e.name,id:e.id}))")
-              print("поля на странице:", поля[:8])
-              try:
-                  page.fill('input[type=email]', os.environ['GOOGLE_EMAIL'], timeout=20000)
-                  page.keyboard.press('Enter')
-                  page.wait_for_timeout(7000)
-                  page.screenshot(path='/tmp/shots/04-after-email.png')
-                  print("email введён, url:", page.url)
-                  поля2 = page.eval_on_selector_all('input', "els=>els.map(e=>({type:e.type,name:e.name}))")
-                  print("поля после email:", поля2[:6])
-                  page.fill('input[type=password]', os.environ['GOOGLE_PASS'], timeout=20000)
-                  page.keyboard.press('Enter')
-                  page.wait_for_timeout(9000)
-                  page.screenshot(path='/tmp/shots/05-after-pass.png')
-                  print("пароль введён, url:", page.url)
-                  текст = page.inner_text('body')[:300]
-                  print("текст после пароля:", текст.replace("\n"," | ")[:250])
-                  # TOTP
-                  if 'code' in page.content().lower() or page.locator('input[type=tel]').count():
-                      код = totp(os.environ['TOTP_SECRET'])
-                      print("вводим TOTP:", код)
-                      for сел in ['input[type=tel]', 'input[autocomplete="one-time-code"]', 'input[name*=otp]']:
-                          loc = page.locator(сел).first
-                          if loc.count():
-                              loc.fill(код); page.keyboard.press('Enter'); print("TOTP введён через", сел); break
-                      page.wait_for_timeout(10000)
-                      page.screenshot(path='/tmp/shots/06-after-totp.png')
-                      print("после TOTP url:", page.url)
-              except Exception as e:
-                  print("ШАГ GOOGLE УПАЛ:", repr(e)[:300])
-                  try: page.screenshot(path='/tmp/shots/07-error.png')
-                  except Exception: pass
-              try:
-                  if page is not pg: page.close()
-              except Exception: pass
-              pg.goto('https://arena.ai/text', timeout=90000)
-              pg.wait_for_timeout(8000)
-              pg.screenshot(path='/tmp/shots/08-final.png')
-              t2 = pg.inner_text('body')
-              print("\n=== ИТОГ ===")
-              print("ВОШЁЛ:", 'Get started' not in t2 and 'Log In' not in t2)
-              print("есть Ask anything:", 'Ask anything' in t2)
-              ctx.storage_state(path='state.json')
-              print("cookies:", len(json.load(open('state.json'))['cookies']) if False else 'см. файл')
-              b.close()
-          PY
-          cat /tmp/debug.txt
-          ls -la /tmp/shots/
+          xvfb-run -a --server-args="-screen 0 1400x950x24" python3 vhod.py 2>&1 | tee /tmp/vhod.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: debug
+          name: vhod-art
           path: |
-            /tmp/debug.txt
+            /tmp/vhod.txt
             /tmp/shots/
-            state.json
