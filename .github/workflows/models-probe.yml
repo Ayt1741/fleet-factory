@@ -1,5 +1,4 @@
 name: models-probe
-# Проверка: доступен ли GitHub Models ИЗ РАННЕРА (в песочнице он заглушён прокси).
 on:
   workflow_dispatch:
 jobs:
@@ -18,7 +17,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python - <<'PY'
+          python - > /tmp/probe.txt 2>&1 <<'PY'
           import json, os, urllib.request, urllib.error
           ток = os.environ["GITHUB_TOKEN"]
           def проба(имя, url, hdr, тело=None):
@@ -27,17 +26,28 @@ jobs:
               try:
                   r = urllib.request.urlopen(req, timeout=90)
                   b = r.read()
-                  print(f"{имя}: {r.status} | {len(b)} байт | {b[:160]}", flush=True)
-                  return b
+                  print(f"{имя}: {r.status} | {len(b)} байт")
+                  print(b[:600].decode("utf-8","replace"))
               except urllib.error.HTTPError as e:
-                  print(f"{имя}: HTTP {e.code} | {e.read()[:200]}", flush=True)
+                  print(f"{имя}: HTTP {e.code}"); print(e.read()[:400].decode("utf-8","replace"))
               except Exception as e:
-                  print(f"{имя}: {repr(e)[:160]}", flush=True)
-          проба("каталог models.github.ai", "https://models.github.ai/catalog/models",
-                {"Authorization": f"Bearer {ток}"})
-          проба("inference gpt-4o-mini", "https://models.github.ai/inference/chat/completions",
+                  print(f"{имя}: {repr(e)[:200]}")
+          проба("каталог", "https://models.github.ai/catalog/models", {"Authorization": f"Bearer {ток}"})
+          print("-----")
+          проба("gpt-4o-mini", "https://models.github.ai/inference/chat/completions",
                 {"Authorization": f"Bearer {ток}", "Accept": "application/vnd.github+json"},
                 {"model": "openai/gpt-4o-mini",
-                 "messages": [{"role":"user","content":"Ответь одним словом: работает"}],
-                 "max_tokens": 10})
+                 "messages": [{"role":"user","content":"Ответь одним словом: работает"}], "max_tokens": 10})
+          print("-----")
+          проба("openai/gpt-4.1", "https://models.github.ai/inference/chat/completions",
+                {"Authorization": f"Bearer {ток}", "Accept": "application/vnd.github+json"},
+                {"model": "openai/gpt-4.1",
+                 "messages": [{"role":"user","content":"Ответь одним словом: работает"}], "max_tokens": 10})
           PY
+          cat /tmp/probe.txt
+      - name: Сохранить лог пробы
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe
+          path: /tmp/probe.txt
