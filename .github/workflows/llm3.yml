@@ -1,0 +1,75 @@
+name: llm3
+on:
+  workflow_dispatch:
+jobs:
+  l:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Три попытки LLM
+        run: |
+          exec > >(tee /tmp/llm.txt) 2>&1
+          python3 - <<'PY'
+          import requests, json, time, re, sys
+          отчёт = open('стенд-отчёт.txt', encoding='utf-8').read()
+          конфиги = json.load(open('перебор3.json', encoding='utf-8'))
+          табл = "\n".join(f"{к['имя']} | досл {к['дословные']:.3f} | настр {к['настроечные']:.3f} | новые {к['новые']:.3f} | общ {к['общ']:.4f}" for к in конфиги)
+          промт = f"""Ты — эксперт по гибридному поиску (BM25/FTS + эмбеддинги + cross-encoder rerank).
+
+ДАННЫЕ: поисковик по журналу ИИ-агента (2109 записей, 791 запись-вопрос). Наборы:
+- дословные (6 запросов): 6/6 MRR 1.000
+- настроечные (20): 16/20 MRR 0.703
+- новые (10): 7/10 MRR 0.650
+
+ПОЛНЫЙ ЛОГ ПРОМАХОВ (36 запросов, эталон и куда попал):
+{отчёт}
+
+УЖЕ ПЕРЕБРАНО (13 конфигураций, все ≤0.779):
+{табл}
+
+ЗАДАЧА: назови 5 НЕ ПРОБОВАННЫХ механизмов, которые поднимут «настроечные» и «новые»,
+не ломая дословные 6/6. Для каждого: (1) название, (2) формула, (3) почему поможет именно
+для этих промахов (укажи номера запросов), (4) ожидаемый эффект в MRR.
+Только конкретика, без общих слов. Максимум 40 строк."""
+          for номер in (1, 2, 3):
+              print(f"\n{'='*70}\nПОПЫТКА {номер}\n{'='*70}", flush=True)
+              ок = False
+              for поп in range(3):
+                  try:
+                      if номер == 1:
+                          r = requests.post('https://text.pollinations.ai/openai',
+                              json={'model':'openai','messages':[{'role':'user','content':промт}],'temperature':0.3}, timeout=180)
+                          print('статус:', r.status_code, flush=True)
+                          if r.status_code == 200:
+                              д = r.json()
+                              print(д['choices'][0]['message']['content'], flush=True); ок = True; break
+                          print(r.text[:300], flush=True)
+                      elif номер == 2:
+                          r = requests.post('https://text.pollinations.ai/openai',
+                              json={'model':'openai-fast','messages':[{'role':'system','content':'Ты эксперт IR. Отвечай только по делу.'},{'role':'user','content':промт}]}, timeout=180)
+                          print('статус:', r.status_code, flush=True)
+                          if r.status_code == 200:
+                              д = r.json(); print(д['choices'][0]['message']['content'], flush=True); ок = True; break
+                          print(r.text[:300], flush=True)
+                      else:
+                          import urllib.parse
+                          к = urllib.parse.quote(промт[:1800])
+                          r = requests.get(f'https://text.pollinations.ai/{к}?model=openai', timeout=180)
+                          print('статус:', r.status_code, flush=True)
+                          if r.status_code == 200 and len(r.text) > 50:
+                              print(r.text[:4000], flush=True); ок = True; break
+                          print(r.text[:300], flush=True)
+                  except Exception as e:
+                      print('ошибка:', repr(e)[:200], flush=True)
+                  time.sleep(50)
+              if not ок: print('ПОПЫТКА', номер, 'НЕ УДАЛАСЬ', flush=True)
+              time.sleep(50)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: llm
+          path: /tmp/llm.txt
