@@ -1,0 +1,104 @@
+name: login-v6
+on:
+  workflow_dispatch:
+jobs:
+  login:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+          pip install -q playwright
+          python -m playwright install --with-deps chromium
+      - name: IMAP-проверка и вход по email
+        env:
+          GOOGLE_EMAIL: ${{ secrets.GOOGLE_EMAIL }}
+          GOOGLE_PASS: ${{ secrets.GOOGLE_PASS }}
+        run: |
+          mkdir -p /tmp/shots
+          exec > >(tee /tmp/login.txt) 2>&1
+          echo "=== IMAP ПРОВЕРКА ==="
+          python3 - <<'PY'
+          import os, imaplib
+          e, p = os.environ['GOOGLE_EMAIL'], os.environ['GOOGLE_PASS']
+          print('email:', e, '| длина пароля:', len(p), '| пробелы:', ' ' in p)
+          for хост in ('imap.gmail.com',):
+              try:
+                  m = imaplib.IMAP4_SSL(хост, 993, timeout=30)
+                  m.login(e, p)
+                  print(хост, 'ВХОД ОК'); m.select('INBOX')
+                  typ, d = m.search(None, 'ALL'); print('писем:', len(d[0].split()))
+                  m.logout()
+              except Exception as ex:
+                  print(хост, 'отказ:', repr(ex)[:200])
+          PY
+          echo "=== БРАУЗЕР: Continue with email ==="
+          xvfb-run -a --server-args="-screen 0 1400x950x24" python3 - <<'PY'
+          import os, time, json
+          from playwright.sync_api import sync_playwright
+          E = os.environ['GOOGLE_EMAIL']
+
+          def turnstile(pg, tag=''):
+              for i in range(6):
+                  try:
+                      for f in pg.frames:
+                          if 'challenges.cloudflare.com' in (f.url or ''):
+                              f.locator('body').first.click(timeout=5000, force=True)
+                              pg.wait_for_timeout(4000); break
+                  except Exception: pass
+                  try: t = pg.inner_text('body')
+                  except Exception:
+                      pg.wait_for_timeout(2000); continue
+                  if 'Security Verification' not in t and 'Verify you are human' not in t:
+                      print(f'[{tag}] turnstile ok {i}'); return True
+                  pg.wait_for_timeout(3000)
+              print(f'[{tag}] turnstile FAIL'); return False
+
+          with sync_playwright() as p:
+              b = p.chromium.launch_persistent_context('/tmp/prof', channel='chrome', headless=False,
+                      args=['--no-sandbox','--disable-dev-shm-usage','--disable-blink-features=AutomationControlled'],
+                      viewport={'width':1400,'height':950}, locale='en-US')
+              b.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined}); window.chrome={runtime:{}};")
+              pg = b.pages[0] if b.pages else b.new_page()
+              pg.goto('https://arena.ai/text', timeout=120000); pg.wait_for_timeout(7000)
+              turnstile(pg, 'старт')
+              pg.locator('button:has-text("Log In")').first.click(timeout=15000); pg.wait_for_timeout(4000)
+              pg.screenshot(path='/tmp/shots/01-модалка.png')
+              # поле email в модалке Arena
+              наи = False
+              for s in ('input[type="email"]','input[placeholder*="email" i]','input[name="email"]'):
+                  try:
+                      l = pg.locator(s).first
+                      if l.count() and l.is_visible():
+                          l.click(timeout=5000); pg.wait_for_timeout(300)
+                          l.fill(E, timeout=8000); pg.wait_for_timeout(500)
+                          print('поле Arena заполнено:', s, '| value:', l.input_value())
+                          наи = True; break
+                  except Exception as ex: print('  поле', s, repr(ex)[:100])
+              pg.screenshot(path='/tmp/shots/02-email-введён.png')
+              if наи:
+                  for s in ('button:has-text("Continue with email")','button[type="submit"]'):
+                      try:
+                          l = pg.locator(s).first
+                          if l.count() and l.is_visible(): l.click(timeout=8000); print('нажал', s); break
+                      except Exception: pass
+                  pg.wait_for_timeout(9000)
+                  pg.screenshot(path='/tmp/shots/03-после-email.png')
+                  print('текст:', pg.inner_text('body')[:600].replace('\n',' | '))
+                  print('поля:', pg.locator('input').count(), [i.get_attribute('type') for i in pg.locator('input').all()][:10])
+              print('url:', pg.url)
+              b.storage_state(path='state.json')
+              print('куки:', [c['name'] for c in b.cookies()])
+              print('state:', os.path.getsize('state.json'))
+              b.close()
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: login
+          path: |
+            /tmp/login.txt
+            /tmp/shots/
+            state.json
