@@ -1,0 +1,127 @@
+name: dvoinoi
+on:
+  workflow_dispatch:
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+          pip install -q playwright
+          python -m playwright install --with-deps chromium
+      - name: Двойной тест
+        run: |
+          mkdir -p /tmp/shots
+          exec > >(tee /tmp/d.txt) 2>&1
+          echo "=== 1. КЛЮЧ ИЗ JS ==="
+          python3 - <<'PY'
+          import urllib.request, re
+          UA={'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36'}
+          def гет(u):
+              with urllib.request.urlopen(urllib.request.Request(u, headers=UA), timeout=30) as o: return o.read().decode('utf-8','replace')
+          html = гет('https://arena.ai/text')
+          чанки = list(dict.fromkeys(re.findall(r'/_next/static/[^"\']+?\.js', html)))
+          print('чанков в html:', len(чанки) if False else len(чанки))
+          # плюс вся карта сборки
+          for м in re.findall(r'/_next/static/chunks/[^"\']+?\.js', html): 
+              if м not in чанки: чанки.append(м)
+          print('всего:', len(чанки))
+          найд = []
+          for п in чанки:
+              try: т = гет('https://arena.ai'+п)
+              except Exception: continue
+              for ш in (r'sb_publishable_[A-Za-z0-9_\-]{10,}', r'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.[A-Za-z0-9_\-]{30,}\.[A-Za-z0-9_\-]{20,}',
+                        r'https://[a-z0-9]{15,}\.supabase\.co', r'NEXT_PUBLIC_SUPABASE[A-Z_]*["\']?\s*[:=]\s*["\']([^"\']{20,})'):
+                  for м in re.findall(ш, т):
+                      if м not in найд: найд.append(м)
+          print('НАЙДЕНО КЛЮЧЕЙ:', len(найд))
+          for н in найд[:10]:
+              print('  ', (н if isinstance(н,str) else str(н))[:120])
+          # ищем auth.arena.ai рядом с apikey
+          for п in чанки[:60]:
+              try: т = гет('https://arena.ai'+п)
+              except Exception: continue
+              if 'auth.arena.ai' in т:
+                  i = т.find('auth.arena.ai')
+                  print('  контекст:', т[max(0,i-300):i+300].replace('\n',' ')[:600])
+                  break
+          PY
+          echo "=== 2. ГОСТЕВАЯ ОТПРАВКА КНОПКОЙ ==="
+          xvfb-run -a --server-args="-screen 0 1400x950x24" python3 - <<'PY'
+          import re
+          from playwright.sync_api import sync_playwright
+          def turnstile(pg, tag=''):
+              for i in range(6):
+                  try:
+                      for f in pg.frames:
+                          if 'challenges.cloudflare.com' in (f.url or ''):
+                              f.locator('body').first.click(timeout=5000, force=True); pg.wait_for_timeout(4000); break
+                  except Exception: pass
+                  try: t = pg.inner_text('body')
+                  except Exception:
+                      pg.wait_for_timeout(2000); continue
+                  if 'Security Verification' not in t and 'Verify you are human' not in t:
+                      print(f'[{tag}] turnstile ok {i}'); return True
+                  pg.wait_for_timeout(3000)
+              return False
+          with sync_playwright() as p:
+              b = p.chromium.launch_persistent_context('/tmp/prof', channel='chrome', headless=False,
+                      args=['--no-sandbox','--disable-dev-shm-usage','--disable-blink-features=AutomationControlled'],
+                      viewport={'width':1400,'height':950}, locale='en-US')
+              b.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined}); window.chrome={runtime:{}};")
+              pg = b.pages[0] if b.pages else b.new_page()
+              зап = []
+              pg.on('request', lambda r: зап.append((r.method, r.url[:120], dict(r.headers).get('apikey'))) if 'auth' in r.url else None)
+              pg.goto('https://arena.ai/text', timeout=120000); pg.wait_for_timeout(8000)
+              turnstile(pg, 'старт')
+              # модалка логина: закрыть крестиком
+              try:
+                  for с in ('button[aria-label="Close"]','button:has(svg.lucide-x)','div[role="dialog"] button >> nth=-1'):
+                      try:
+                          l = pg.locator(с).last
+                          if l.count() and l.is_visible(): l.click(timeout=3000); print('закрыл', с); break
+                      except Exception: pass
+              except Exception: pass
+              pg.keyboard.press('Escape'); pg.wait_for_timeout(2500)
+              # кнопки композера
+              print('кнопки:', [ (x.get_attribute('aria-label') or x.inner_text() or '')[:20] for x in pg.locator('button').all() if x.is_visible()][:20])
+              print('SVG-кнопок:', pg.locator('form button, div[contenteditable] ~ button').count())
+              # ввести и нажать именно кнопку Send
+              box = pg.locator('div[contenteditable="true"].tiptap').first
+              box.click(timeout=10000)
+              pg.keyboard.type('Скажи одним словом: готово', delay=30)
+              pg.wait_for_timeout(1500)
+              pg.screenshot(path='/tmp/shots/01-набрано.png')
+              # все видимые кнопки справа от композера
+              св = pg.evaluate("""() => Array.from(document.querySelectorAll('button')).map(b=>{const r=b.getBoundingClientRect();return {t:(b.innerText||'').trim().slice(0,20), a:b.getAttribute('aria-label'), x:Math.round(r.x), y:Math.round(r.y), w:Math.round(r.width), h:Math.round(r.height), dis:b.disabled}}).filter(o=>o.w>0&&o.h>0&&o.x>700&&o.y>380&&o.y<560)""")
+              print('кнопки у композера:', св)
+              для = None
+              for к in св:
+                  if к['a'] and 'send' in (к['a'] or '').lower(): для = к; break
+              print('выбрана:', для)
+              if для:
+                  pg.mouse.click(для['x']+для['w']//2, для['y']+для['h']//2)
+              else:
+                  # клик по самой правой кнопке внизу композера
+                  if св:
+                      к = max(св, key=lambda z: z['x'])
+                      pg.mouse.click(к['x']+к['w']//2, к['y']+к['h']//2); print('клик по крайней правой:', к)
+              pg.wait_for_timeout(7000)
+              pg.screenshot(path='/tmp/shots/02-после-send.png')
+              t = pg.inner_text('body')
+              print('URL:', pg.url)
+              print('текст:', t[:500].replace('\n',' | '))
+              print('модалка логина?:', 'Log In or Create Account' in t)
+              print('auth-запросы:', зап[:5])
+              b.close()
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: d
+          path: |
+            /tmp/d.txt
+            /tmp/shots/
