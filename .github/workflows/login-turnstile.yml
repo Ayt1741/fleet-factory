@@ -1,0 +1,150 @@
+name: login-turnstile
+on:
+  workflow_dispatch:
+jobs:
+  login:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: |
+          pip install playwright==1.47.0
+          python -m playwright install --with-deps chromium
+      - name: Вход с кликом по Turnstile
+        env:
+          GOOGLE_EMAIL: ${{ secrets.GOOGLE_EMAIL }}
+          GOOGLE_PASS: ${{ secrets.GOOGLE_PASS }}
+          TOTP_SECRET: ${{ secrets.TOTP_SECRET }}
+        run: |
+          mkdir -p /tmp/shots
+          xvfb-run -a --server-args="-screen 0 1400x950x24" python - > /tmp/login.txt 2>&1 <<'PY'
+          import base64, hashlib, hmac, os, re, struct, time
+          from playwright.sync_api import sync_playwright
+
+          def totp(secret):
+              s = re.sub(r'\s+', '', secret).upper().rstrip('=')
+              key = base64.b32decode(s + '=' * ((8 - len(s) % 8) % 8))
+              h = hmac.new(key, struct.pack('>Q', int(time.time() // 30)), hashlib.sha1).digest()
+              o = h[-1] & 0x0F
+              return str((struct.unpack('>I', h[o:o+4])[0] & 0x7FFFFFFF) % 1000000).zfill(6)
+
+          UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+          АРГС = ['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled',
+                  '--disable-features=IsolateOrigins,site-per-process', '--window-size=1400,950']
+
+          def пройти_turnstile(pg, метка=""):
+              """Пытается кликнуть чекбокс внутри iframe Cloudflare Turnstile."""
+              for попытка in range(6):
+                  текст = pg.inner_text('body')
+                  if 'Verification' not in текст and 'человек' not in текст:
+                      print(f"  [{метка}] Turnstile пройден на попытке {попытка}")
+                      return True
+                  # iframe-ы
+                  try:
+                      фреймы = pg.frames
+                      print(f"  [{метка}] попытка {попытка}: фреймов {len(фреймы)}: {[f.url[:60] for f in фреймы]}")
+                      for ф in фреймы:
+                          if 'challenges.cloudflare.com' in ф.url or 'turnstile' in ф.url:
+                              print(f"    нашёл iframe Turnstile: {ф.url[:80]}")
+                              # пробуем checkbox
+                              for сел in ('input[type=checkbox]', 'label', 'div.cb-lb', '#challenge-stage', 'body'):
+                                  try:
+                                      л = ф.locator(сел).first
+                                      if л.count():
+                                          л.click(timeout=5000, force=True)
+                                          print(f"    клик по {сел} в iframe — ок")
+                                          break
+                                  except Exception as e:
+                                      pass
+                  except Exception as e:
+                      print("    ошибка фреймов:", repr(e)[:100])
+                  # пробуем и через frame_locator по title
+                  try:
+                      fl = pg.frame_locator('iframe[title*="Cloudflare"], iframe[src*="challenges.cloudflare.com"]')
+                      cb = fl.locator('input[type=checkbox]').first
+                      if cb.count():
+                          cb.click(timeout=5000, force=True)
+                          print("    клик через frame_locator ок")
+                  except Exception as e:
+                      pass
+                  pg.wait_for_timeout(6000)
+              return 'Verification' not in pg.inner_text('body') and 'человек' not in pg.inner_text('body')
+
+          with sync_playwright() as p:
+              b = p.chromium.launch(headless=False, args=АРГС)   # HEADED под xvfb
+              ctx = b.new_context(locale='ru-RU', user_agent=UA, viewport={'width':1400,'height':950})
+              # маскируем автоматизацию
+              ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
+              pg = ctx.new_page()
+              pg.goto('https://arena.ai/text', timeout=120000)
+              pg.wait_for_timeout(8000)
+              pg.screenshot(path='/tmp/shots/01.png')
+              print("старт:", pg.url)
+              ок = пройти_turnstile(pg, "старт")
+              pg.screenshot(path='/tmp/shots/02-turnstile.png')
+              print("после Turnstile:", ок)
+              print("текст:", pg.inner_text('body')[:200].replace("\n"," | "))
+              # вход
+              if ok:
+                  for сел in ('button:has-text("Log in")', 'button:has-text("Log In")', 'a:has-text("Log in")'):
+                      try:
+                          pg.locator(сел).first.click(timeout=8000)
+                          print("клик вход:", сел); break
+                      except Exception: pass
+                  pg.wait_for_timeout(5000)
+                  pg.screenshot(path='/tmp/shots/03-меню.png')
+                  print("меню:", pg.inner_text('body')[:250].replace("\n"," | "))
+                  page = pg
+                  try:
+                      with ctx.expect_page(timeout=20000) as инфо:
+                          pg.locator("text=/Google/i").first.click(timeout=15000)
+                      page = инфо.value
+                      print("Google в новой вкладке")
+                  except Exception as e:
+                      print("Google не открылся:", repr(e)[:120])
+                  page.wait_for_timeout(6000)
+                  try: page.screenshot(path='/tmp/shots/04-google.png')
+                  except Exception: pass
+                  print("url Google:", page.url, "|", page.title()[:60])
+                  try:
+                      page.fill('input[type=email]', os.environ['GOOGLE_EMAIL'], timeout=25000)
+                      page.keyboard.press('Enter'); page.wait_for_timeout(8000)
+                      page.screenshot(path='/tmp/shots/05-email.png'); print("email ок:", page.url)
+                      page.fill('input[type=password]', os.environ['GOOGLE_PASS'], timeout=25000)
+                      page.keyboard.press('Enter'); page.wait_for_timeout(11000)
+                      page.screenshot(path='/tmp/shots/06-пароль.png'); print("пароль ок:", page.url)
+                      if page.locator('input[type=tel]').count():
+                          код = totp(os.environ['TOTP_SECRET']); print("TOTP:", код)
+                          page.locator('input[type=tel]').first.fill(код); page.keyboard.press('Enter')
+                          page.wait_for_timeout(12000)
+                          page.screenshot(path='/tmp/shots/07-totp.png')
+                  except Exception as e:
+                      print("ШАГ GOOGLE УПАЛ:", repr(e)[:200])
+                      try: page.screenshot(path='/tmp/shots/08-ошибка.png')
+                      except Exception: pass
+                  try:
+                      if page is not pg: page.close()
+                  except Exception: pass
+              pg.goto('https://arena.ai/text', timeout=120000)
+              pg.wait_for_timeout(9000)
+              пройти_turnstile(pg, "финал")
+              pg.screenshot(path='/tmp/shots/09-финал.png')
+              t2 = pg.inner_text('body')
+              print("=== ИТОГ ===")
+              print("ВОШЁЛ:", 'Get started' not in t2 and 'Sign up' not in t2 and 'Log In' not in t2)
+              print("Ask anything:", 'Ask anything' in t2)
+              print("textarea:", pg.locator('textarea').count())
+              ctx.storage_state(path='state.json')
+              print("state.json:", os.path.getsize('state.json'), "Б")
+              b.close()
+          PY
+          cat /tmp/login.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: login
+          path: |
+            /tmp/login.txt
+            /tmp/shots/
+            state.json
