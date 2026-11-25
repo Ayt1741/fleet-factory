@@ -65,6 +65,10 @@ jobs:
           except Exception as e: print("векторы вопросов не скачались:", repr(e)[:120])
           try: raw("движок/данные/вект-вопросы_ном.npy", "движок/данные/вект-вопросы_ном.npy", 100)
           except Exception as e: print("номера вопросов не скачались:", repr(e)[:120])
+          try: raw("движок/результат/вект-шапки.npy", "движок/данные/вект-шапки.npy", 1_000_000)
+          except Exception as e: print("векторы шапок не скачались:", repr(e)[:120])
+          try: raw("движок/результат/вект-шапки_ном.npy", "движок/данные/вект-шапки_ном.npy", 1000)
+          except Exception as e: print("номера шапок не скачались:", repr(e)[:120])
           PY
 
 
@@ -84,7 +88,7 @@ jobs:
               from sentence_transformers import SentenceTransformer
               import sqlite3
               con = sqlite3.connect(E.ИНДЕКС)
-              стр = list(con.execute("SELECT н, substr(текст,1,2000) FROM записи ORDER BY н"))
+              стр = list(con.execute("SELECT н, текст FROM записи ORDER BY н"))
               con.close()
               м = SentenceTransformer("BAAI/bge-m3", device="cpu"); м.max_seq_length = 512
               Е, t0 = [], time.time()
@@ -133,7 +137,7 @@ jobs:
               import numpy as np, time, sqlite3
               from sentence_transformers import SentenceTransformer
               con = sqlite3.connect(E.ИНДЕКС)
-              стр = list(con.execute("SELECT н, substr(текст,1,2400) FROM записи ORDER BY н"))
+              стр = list(con.execute("SELECT н, текст FROM записи ORDER BY н"))
               con.close()
               # 1024 токена покрывают 100% записей журнала (самая длинная 702 токена)
               м = SentenceTransformer("BAAI/bge-m3", device="cpu"); м.max_seq_length = 1024
